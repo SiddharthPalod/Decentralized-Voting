@@ -30,6 +30,11 @@ This project aims to develop a secure, transparent, and decentralized voting sys
    - Use government-issued IDs (e.g., Aadhaar card, passport, PAN card) for validation.
 ---
 
+
+## Project Flow
+
+![Project Flow](flow.jpg)
+
 ## User Flow
 
 ### Steps:
@@ -76,8 +81,3 @@ This project aims to develop a secure, transparent, and decentralized voting sys
    - Breakdown of votes by:  
      - Gender (Male/Female)  
      - State (if applicable)
-
-
-## Project Flow
-
-![Project Flow](flow.jpg)
