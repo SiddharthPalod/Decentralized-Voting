@@ -21,9 +21,14 @@ FLOW FOR USER:
 5) Store the vote along with meta mask id and govt id no onto the AWS server
 6) Display message indicating voted successfully
 
+
 FLOW FOR ADMIN:
 Enter a UTH-18 encoded password string to login
 1) Check the results of votes via Data Visualizations
 2) Show Dashboard with live tracking of current lead
 3) Show votes by demographics like male/female
 4) Show votes by states (if possible)
+
+## Project Flow
+
+![Project Flow](flow.jpg)
