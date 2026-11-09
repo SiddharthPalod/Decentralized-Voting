@@ -1,83 +1,146 @@
-# Decentralized Voting System
+# TrueLedger — Decentralized Fund & Task Allocation System
 
-This project aims to develop a secure, transparent, and decentralized voting system leveraging blockchain technology and cloud services.
+A decentralized, transparent platform built on the **Aptos Blockchain** designed to prevent corruption and fund misappropriation in government and organizational public budgets.
 
 ---
 
-## Features
+## 🌟 Overview
 
-1. **Cloud Storage with AWS**  
-   - Votes are securely stored in AWS, ensuring scalability and reliability.
+TrueLedger enforces complete financial transparency between government authorities (**Regulators**) and project executors (**Taskholders**):
 
-2. **Concurrency and Live Updates**  
-   - Ensure a seamless voting experience for users with real-time updates for administrators.
+- **Regulators** allocate verified project tasks and track budgeted public expenditure.
+- **Taskholders** register on-chain profiles, receive task notifications, accept/decline tasks, execute work, and record fund utilization transparently.
+- **Aptos Move Smart Contracts** provide immutable audit trails, event emission, and decentralized state management without centralized intermediaries.
 
-3. **Custom Blockchain Currency**  
-   - Implement a smart contract to create a unique blockchain currency.  
-   - Each user receives **1 token** to cast their vote.
-
-4. **Transaction-Based Voting System**  
-   - A simple transaction mechanism for casting votes on the blockchain.
-
-5. **Vote Retraction and Refunds**  
-   - Users can retract their votes and get their currency refunded.
-
-6. **Cross-Platform GUI**  
-   - Develop a mobile app using **React Native** or **Flutter** for user convenience.  
-   - If mobile support is not feasible, create a web-based GUI with **React** and deploy it on **Vercel**.
-
-7. **Eligibility Verification**  
-   - Use government-issued IDs (e.g., Aadhaar card, passport, PAN card) for validation.
 ---
 
+## 🏗️ Architecture
 
-## Project Flow
+```
+                                  +------------------------------+
+                                  |         Landing Page         |
+                                  |           (IntroPg)          |
+                                  +---------------+--------------+
+                                                  |
+                         +------------------------+------------------------+
+                         |                                                 |
+                         v                                                 v
+           +---------------------------+                     +---------------------------+
+           |     Regulator Portal      |                     |    Taskholder Portal      |
+           |      (ServerIntroPg)      |                     |      (ClientIntroPg)      |
+           +-------------+-------------+                     +-------------+-------------+
+                         |                                                 |
+                         | Allocates Tasks & Budget                        | Accepts Tasks & Reports Status
+                         v                                                 v
+  +-----------------------------------------------------------------------------------------------+
+  |                                     Aptos Devnet                                              |
+  |                           Contract Address: 0x3c6d4...ce6b                                    |
+  |                                                                                               |
+  |   +---------------------------------------+   +-------------------------------------------+   |
+  |   |             user Module               |   |            task_manager Module            |   |
+  |   | - User profile (Name, Sector, Addr)   |   | - NotificationManager (add/accept/decline)|   |
+  |   | - create_user, update_name, update... |   | - TaskManager (create, delete, status)    |   |
+  |   | - UserCreated event                   |   | - NotificationAdded & TaskCreated events  |   |
+  |   +---------------------------------------+   +-------------------------------------------+   |
+  +-----------------------------------------------------------------------------------------------+
+```
 
-![Project Flow](flow.jpg)
+---
 
-## User Flow
+## 🚀 Key Features
 
-### Steps:
+1. **Modern Aptos TS SDK (`@aptos-labs/ts-sdk` v1.32+)**:
+   - High-performance interaction with Aptos Devnet fullnodes.
+   - Standardized transaction payload structures and event polling via `getAccountEventsByEventType`.
 
-1. **Identity Verification**  
-   - Upload an image of a government document containing:  
-     - Government ID Number  
-     - Date of Birth  
-     - Nationality  
-   - Extract details using OpenCV and OCR model and verify:  
-     - Age ≥ 18 years  
-     - Nationality is India  
-   - **Privacy Assurance**: The uploaded image will **not be stored** in the database.
+2. **Unified Wallet Adapter**:
+   - Single standard integration using `@aptos-labs/wallet-adapter-react` and `@aptos-labs/wallet-adapter-ant-design`.
+   - Native support for **Petra Wallet**, **Nightly**, **Pontem**, and **Mizu**.
 
-2. **Connect to Blockchain**  
-   - Ask the user to connect to the blockchain mainnet using **MetaMask** (or an alternative tool).
+3. **Dynamic On-Chain Fund Accounting**:
+   - Real-time aggregation of allocated funds, utilized funds, and completed task milestones.
+   - Interactive progress indicators via `MoneyCard` dynamically calculated from task transactions.
 
-3. **Assign Voting Token**  
-   - Add 1 token of the custom blockchain currency to the user's MetaMask wallet.
+4. **On-Chain User Profiles & Registration**:
+   - User sector classification (Healthcare, Infrastructure, Education, Agriculture, Technology).
+   - Auto-checks on-chain existence and provides modal registration for new wallets.
 
-4. **Voting**  
-   - Allow the user to vote for one of 4–5 predefined parties.
+5. **Role-Based Protected Routing**:
+   - `ProtectedRoute` component ensures users connect wallets before accessing specialized Regulator or Taskholder interfaces.
 
-5. **Store Vote**  
-   - Record the vote along with the user's demographics in AWS.
+---
 
-6. **Confirmation**  
-   - Display a success message once the vote is submitted.
+## 🛠️ Project Structure
 
-## Admin Flow
+```
+DecentralizedVote/
+├── client/
+│   ├── src/
+│   │   ├── assets/               # Branding, background imagery, logos
+│   │   ├── components/
+│   │   │   ├── MoneyCard.tsx         # Metric display for funds & utilization %
+│   │   │   ├── NotificationsList.tsx # Notification bell & task approval dropdown
+│   │   │   ├── ProtectedRoute.tsx    # Wallet connection route guard
+│   │   │   ├── RegisterModal.tsx     # On-chain profile registration dialog
+│   │   │   ├── RequestInput.tsx      # Regulator task assignment form
+│   │   │   ├── TodoItem.tsx          # Task item row with status transitions
+│   │   │   └── TodoList.tsx          # Real-time task manager list
+│   │   ├── lib/
+│   │   │   └── aptosClient.ts        # Singleton Aptos client & contract addresses
+│   │   ├── pages/
+│   │   │   ├── IntroPg.tsx           # Role selector and initial landing
+│   │   │   ├── ClientIntroPg.tsx     # Taskholder execution dashboard
+│   │   │   └── ServerIntroPg.tsx     # Regulator control center
+│   │   ├── App.tsx                   # Main router configuration
+│   │   ├── config.ts                 # Devnet node and module constants
+│   │   └── main.tsx                  # Root mount with AptosWalletAdapterProvider
+│   ├── package.json
+│   └── vite.config.ts
+└── contracts/
+    ├── Move.toml                     # Move package manifest
+    └── sources/
+        └── notifications.move        # user & task_manager Move modules
+```
 
-### Steps:
+---
 
-1. **Login**  
-   - Enter a **UTH-18** encoded password string to access the admin dashboard.
+## 💻 Getting Started
 
-2. **View Results**  
-   - Use data visualizations to display voting results.
+### Prerequisites
 
-3. **Live Dashboard**  
-   - Real-time tracking of the leading party.
+- [Node.js](https://nodejs.org/) (v18+)
+- [Petra Wallet extension](https://petra.app/) installed in your browser
+  - Set network to **Aptos Devnet**
+  - Claim testnet APT via Petra's "Faucet" button
 
-4. **Demographics Analysis**  
-   - Breakdown of votes by:  
-     - Gender (Male/Female)  
-     - State (if applicable)
+### Running the Frontend
+
+```bash
+# Navigate to the client directory
+cd client
+
+# Install dependencies
+npm install
+
+# Start development server
+npm run dev
+```
+
+Open `http://localhost:5173` in your browser.
+
+### Building for Production
+
+```bash
+cd client
+npm run build
+```
+
+---
+
+## 🔗 Smart Contract Reference
+
+- **Network**: Aptos Devnet
+- **Contract Address**: `0x3c6d41e6d9cb82e798e861606d8ef50f90b6aedb1ef66e97c33f8879013bce6b`
+- **Modules**:
+  - `user`: Manages taskholder profiles and sector assignment.
+  - `task_manager`: Manages fund allocations, notifications, and task lifecycle (`Pending` -> `Ongoing` -> `Completed`).

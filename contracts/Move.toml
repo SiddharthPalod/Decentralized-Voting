@@ -1,5 +1,5 @@
 [package]
-name = "my_todo_list"
+name = "notification"
 version = "1.0.0"
 authors = []
 
@@ -9,9 +9,9 @@ account_addr='3c6d41e6d9cb82e798e861606d8ef50f90b6aedb1ef66e97c33f8879013bce6b'
 [dev-addresses]
 
 [dependencies.AptosFramework]
-git = "https://github.com/aptos-labs/aptos-framework.git"
-rev = "mainnet"
-subdir = "aptos-framework"
+git = "https://github.com/aptos-labs/aptos-core.git"
+rev = "aptos-cli-v7.3.0"
+subdir = "aptos-move/framework/aptos-framework"
 
 
 [dev-dependencies]

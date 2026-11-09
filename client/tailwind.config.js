@@ -4,8 +4,15 @@ export default {
   theme: {
     extend: {
       colors: {
-        'pink':'#FF5EAA',
-        'dark': '#0B0D11',
+        'pink': '#FF5EAA',
+        'dark': '#0f0f0f',
+        'charcoal': {
+          DEFAULT: '#0f0f0f',
+          card: '#141414',
+          input: '#1c1c1c',
+          border: '#282828',
+          hover: '#222222',
+        },
       },
       fontFamily: {
         primary: ['Montserrat', 'sans-serif'],
@@ -17,4 +24,3 @@ export default {
   },
   plugins: [],
 }
-
