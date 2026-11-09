@@ -1,0 +1,118 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { useWallet } from '@aptos-labs/wallet-adapter-react';
+import { taskLedger, LedgerTask } from '../services/taskLedgerService';
+import TodoItem from './TodoItem';
+import TaskProofSubmissionModal from './TaskProofSubmissionModal';
+
+interface TodoListProps {
+  onTasksLoaded?: (tasks: LedgerTask[]) => void;
+  taskholderName?: string;
+}
+
+const TodoList: React.FC<TodoListProps> = ({
+  onTasksLoaded,
+}) => {
+  const [taskList, setTaskList] = useState<LedgerTask[]>([]);
+  const { account } = useWallet();
+
+  // Selected task for proof submission
+  const [selectedTaskForProof, setSelectedTaskForProof] = useState<LedgerTask | null>(null);
+  const [isProofModalOpen, setIsProofModalOpen] = useState(false);
+
+  const fetchTasks = useCallback(() => {
+    const all = taskLedger.getAllTasks();
+    const userAddr = account?.address ? account.address.toString().toLowerCase() : '';
+    const relevant = all.filter((t) => {
+      if (!userAddr) return true;
+      if (!t.taskholderAddress) return true;
+      return (
+        t.taskholderAddress.toLowerCase() === userAddr ||
+        t.regulatorAddress.toLowerCase() === userAddr ||
+        t.taskholderAddress === 'ALL'
+      );
+    });
+
+    setTaskList(relevant);
+    if (onTasksLoaded) {
+      onTasksLoaded(relevant);
+    }
+  }, [account, onTasksLoaded]);
+
+  useEffect(() => {
+    fetchTasks();
+    const unsubscribe = taskLedger.subscribe(fetchTasks);
+    return () => unsubscribe();
+  }, [fetchTasks]);
+
+  const deleteTask = async (taskId: number) => {
+    taskLedger.deleteTask(taskId);
+    fetchTasks();
+  };
+
+  const updateStatus = async (id: number, newStatus: 'Pending' | 'Completed' | 'Ongoing') => {
+    taskLedger.updateTaskStatus(id, newStatus);
+    fetchTasks();
+  };
+
+  const handleOpenProofModal = (task: LedgerTask) => {
+    setSelectedTaskForProof(task);
+    setIsProofModalOpen(true);
+  };
+
+  const handleSubmitProof = (params: {
+    taskId: number;
+    actualMoneySpent: number;
+    proofDocumentName: string;
+    proofDocumentCid?: string;
+    completionNotes: string;
+  }) => {
+    taskLedger.submitTaskProof(params);
+    fetchTasks();
+  };
+
+  return (
+    <div className="p-5 min-h-96 min-w-fit text-white bg-[#141414]/95 border border-[#282828] shadow-2xl rounded-2xl backdrop-blur-xl">
+      <div>
+        <div className="flex items-center justify-between border-b border-[#282828] pb-3 mb-4">
+          <h2 className="text-xl font-bold font-headline text-white">
+            Active Task Executions & Assignments
+          </h2>
+          <span className="text-xs text-neutral-400 font-mono">
+            {taskList.length} active assignments
+          </span>
+        </div>
+
+        {taskList.length === 0 ? (
+          <div className="py-12 text-center text-neutral-400 text-sm">
+            No active tasks. Accept an assigned task from the notifications bell or use the Task Request form on the left.
+          </div>
+        ) : (
+          <div className="space-y-2 max-h-[520px] overflow-y-auto pr-1">
+            {taskList.map((task) => (
+              <TodoItem
+                key={task.id}
+                task={task}
+                deleteTask={deleteTask}
+                updateStatus={updateStatus}
+                onOpenProofModal={handleOpenProofModal}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Proof Submission Modal */}
+      <TaskProofSubmissionModal
+        task={selectedTaskForProof}
+        isOpen={isProofModalOpen}
+        onClose={() => {
+          setIsProofModalOpen(false);
+          setSelectedTaskForProof(null);
+        }}
+        onSubmitProof={handleSubmitProof}
+      />
+    </div>
+  );
+};
+
+export default TodoList;
