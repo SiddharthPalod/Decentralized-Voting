@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWallet } from '@aptos-labs/wallet-adapter-react';
 import WalletSelector from '../components/WalletSelector';
+import ThemeToggle from '../components/ThemeToggle';
 import RegisterModal from '../components/RegisterModal';
-import bgtexture from '../assets/bgTexture.jpg';
 import Logo from '../assets/logo.png';
 
 function IntroPg() {
@@ -33,21 +33,24 @@ function IntroPg() {
   };
 
   return (
-    <section
-      className="flex flex-col items-center p-8 min-h-screen text-white bg-[#0B0D11]"
-      style={{
-        backgroundImage: `url(${bgtexture})`,
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-      }}
-    >
+    <section className="flex flex-col items-center p-8 min-h-screen text-white bg-black app-page-bg">
       {/* Top bar */}
       <div className="flex justify-between items-center w-full mb-8">
         <div className="flex items-center gap-3">
-          <img src={Logo} className="h-9" alt="TrueLedger Logo" />
+          <img
+            src={Logo}
+            className="h-9 md:h-10 w-auto object-contain shrink-0"
+            alt="TrueLedger Logo"
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).src = '/logo.png';
+            }}
+          />
           <span className="text-xl font-headline font-bold text-white tracking-wider">TRUELEDGER</span>
         </div>
-        <WalletSelector />
+        <div className="flex items-center gap-3">
+          <ThemeToggle />
+          <WalletSelector />
+        </div>
       </div>
 
       {/* Hero */}
@@ -67,42 +70,44 @@ function IntroPg() {
       <div className="flex flex-col md:flex-row items-center justify-center gap-8 w-full max-w-3xl">
 
         {/* Taskholder Card */}
-        <div className="w-full md:w-80 bg-black/40 backdrop-blur-lg p-6 rounded-2xl border border-white/10 hover:border-emerald-500/40 transition group">
+        <div className="w-full md:w-80 bg-[#141414]/95 border border-[#282828] shadow-2xl rounded-2xl p-6 backdrop-blur-xl hover:border-emerald-500/50 transition group">
           <img
             src="https://plus.unsplash.com/premium_vector-1725434321937-4b3432d64d36?q=80&w=800&auto=format&fit=crop"
             alt="Taskholder"
             className="rounded-xl w-full h-40 object-cover mb-4"
           />
-          <h2 className="font-bold text-xl mb-1">Field Taskholder</h2>
+          <h2 className="font-bold text-xl mb-1 text-white">Field Taskholder</h2>
           <p className="text-neutral-400 text-xs mb-5 leading-relaxed">
             Execute government tasks, submit proof of work, and earn recognition in your domain — all on-chain.
           </p>
           <button
             onClick={() => handleEnter('taskholder')}
             disabled={!connected}
-            className="w-full py-3 rounded-xl font-bold text-sm bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-lg shadow-emerald-600/20"
+            className="w-full py-3 rounded-xl font-bold text-sm bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-lg shadow-emerald-600/20 text-white"
           >
             {connected ? 'Enter as Taskholder →' : 'Connect Wallet to Enter'}
           </button>
         </div>
 
-        <span className="font-primary text-2xl font-bold text-neutral-500">OR</span>
+        <span className="font-primary text-xs font-bold text-neutral-400 px-3.5 py-1.5 rounded-full bg-[#1c1c1c] border border-[#282828] shadow-sm">
+          OR
+        </span>
 
         {/* Regulator Card */}
-        <div className="w-full md:w-80 bg-black/40 backdrop-blur-lg p-6 rounded-2xl border border-white/10 hover:border-blue-500/40 transition group">
+        <div className="w-full md:w-80 bg-[#141414]/95 border border-[#282828] shadow-2xl rounded-2xl p-6 backdrop-blur-xl hover:border-blue-500/50 transition group">
           <img
             src="https://plus.unsplash.com/premium_vector-1720601640744-a80ffc4ec893?q=80&w=800&auto=format&fit=crop"
             alt="Regulator"
             className="rounded-xl w-full h-40 object-cover mb-4"
           />
-          <h2 className="font-bold text-xl mb-1">Department Regulator</h2>
+          <h2 className="font-bold text-xl mb-1 text-white">Department Regulator</h2>
           <p className="text-neutral-400 text-xs mb-5 leading-relaxed">
             Allocate department budgets, assign tasks, audit completions, and sign off fund disbursements on Aptos.
           </p>
           <button
             onClick={() => handleEnter('regulator')}
             disabled={!connected}
-            className="w-full py-3 rounded-xl font-bold text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-lg shadow-blue-600/20"
+            className="w-full py-3 rounded-xl font-bold text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-lg shadow-blue-600/20 text-white"
           >
             {connected ? 'Enter as Regulator →' : 'Connect Wallet to Enter'}
           </button>

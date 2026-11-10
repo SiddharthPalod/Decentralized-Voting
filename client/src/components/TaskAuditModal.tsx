@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { LedgerTask } from '../services/taskLedgerService';
+import { LedgerTask, taskLedger } from '../services/taskLedgerService';
 import {
   FileText,
   ShieldCheck,
@@ -9,6 +9,7 @@ import {
   AlertCircle,
   Eye,
   Loader2,
+  XCircle,
 } from 'lucide-react';
 
 interface TaskAuditModalProps {
@@ -16,6 +17,7 @@ interface TaskAuditModalProps {
   isOpen: boolean;
   onClose: () => void;
   onApprove: (taskId: number, finalVerifiedAmount: number) => Promise<string | void> | void;
+  onReject?: (taskId: number, feedback: string) => void;
 }
 
 const TaskAuditModal: React.FC<TaskAuditModalProps> = ({
@@ -23,6 +25,7 @@ const TaskAuditModal: React.FC<TaskAuditModalProps> = ({
   isOpen,
   onClose,
   onApprove,
+  onReject,
 }) => {
   if (!isOpen || !task) return null;
 
@@ -32,6 +35,10 @@ const TaskAuditModal: React.FC<TaskAuditModalProps> = ({
   const [isSigning, setIsSigning] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isDocViewerOpen, setIsDocViewerOpen] = useState(false);
+
+  // Denial & Feedback state
+  const [isRejecting, setIsRejecting] = useState(false);
+  const [rejectFeedback, setRejectFeedback] = useState('');
 
   const surplus = Math.max(0, task.moneyAllocated - verifiedAmount);
 
@@ -48,6 +55,22 @@ const TaskAuditModal: React.FC<TaskAuditModalProps> = ({
     } finally {
       setIsSigning(false);
     }
+  };
+
+  const handleReject = () => {
+    if (!rejectFeedback.trim()) {
+      alert('Please enter a reason or feedback for the revision request.');
+      return;
+    }
+    if (onReject) {
+      onReject(task.id, rejectFeedback.trim());
+    } else {
+      taskLedger.rejectTaskAudit(task.id, rejectFeedback.trim());
+    }
+    alert('Audit denied. The taskholder has been notified with your feedback and requested to revise and resubmit.');
+    setIsRejecting(false);
+    setRejectFeedback('');
+    onClose();
   };
 
   const isPdf =
@@ -243,61 +266,122 @@ const TaskAuditModal: React.FC<TaskAuditModalProps> = ({
               </div>
             </div>
 
-            {/* Verification Adjustment Input */}
-            <div className="p-4 bg-neutral-900/90 border border-neutral-700 rounded-xl">
-              <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                Approved Disbursement Amount (₹):
-              </label>
-              <input
-                type="number"
-                max={task.moneyAllocated}
-                min={0}
-                value={verifiedAmount}
-                onChange={(e) => setVerifiedAmount(Number(e.target.value))}
-                className="w-full p-2.5 bg-neutral-800 border border-neutral-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              />
-              <p className="text-[11px] text-neutral-400 mt-1.5">
-                Any difference between Allocated (₹{task.moneyAllocated.toLocaleString()}) and Approved
-                will automatically be refunded to the {task.sector} department treasury balance.
-              </p>
-            </div>
+            {/* Denial Feedback Section OR Verification Settlement Section */}
+            {isRejecting ? (
+              <div className="p-4 bg-red-950/40 border border-red-800/80 rounded-xl space-y-3 animate-in fade-in">
+                <div className="flex items-center gap-2 text-red-300 font-bold text-sm">
+                  <XCircle className="w-4 h-4 text-red-400" />
+                  Deny Completion Proof & Send Feedback
+                </div>
+                <p className="text-xs text-neutral-300">
+                  Explain why the submitted proof is insufficient (e.g., invoices missing official hospital stamp, work incomplete, unverified expenditure). The task will be returned to the taskholder's active list with your guidance.
+                </p>
+                <textarea
+                  rows={3}
+                  value={rejectFeedback}
+                  onChange={(e) => setRejectFeedback(e.target.value)}
+                  placeholder="e.g. Invoices missing official clinic stamp; please re-upload valid stamped receipts."
+                  className="w-full p-3 bg-neutral-900 border border-neutral-700 rounded-lg text-white text-xs placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-red-500"
+                />
+              </div>
+            ) : (
+              <div className="p-4 bg-neutral-900/90 border border-neutral-700 rounded-xl">
+                <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
+                  Approved Disbursement Amount (₹):
+                </label>
+                <input
+                  type="number"
+                  max={task.moneyAllocated}
+                  min={0}
+                  step={1}
+                  value={verifiedAmount ?? ''}
+                  onKeyDown={(e) => {
+                    if (['e', 'E', '+', '-', '.'].includes(e.key)) {
+                      e.preventDefault();
+                    }
+                  }}
+                  onChange={(e) => {
+                    const cleaned = e.target.value.replace(/[^0-9]/g, '');
+                    const parsed = parseInt(cleaned, 10);
+                    const val = isNaN(parsed) ? 0 : Math.max(0, Math.min(task.moneyAllocated, parsed));
+                    setVerifiedAmount(val);
+                  }}
+                  className="w-full p-2.5 bg-neutral-800 border border-neutral-600 rounded-lg text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+                <p className="text-[11px] text-neutral-400 mt-1.5">
+                  Any difference between Allocated (₹{task.moneyAllocated.toLocaleString()}) and Approved
+                  will automatically be refunded to the {task.sector} department treasury balance.
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Footer Actions */}
-          <div className="flex items-center justify-end gap-3 mt-6 border-t border-[#242424] pt-4">
-            <button
-              onClick={onClose}
-              className="px-4 py-2 text-sm font-semibold text-neutral-400 hover:text-white transition"
-            >
-              Cancel
-            </button>
-
-            {!isConfirming ? (
-              <button
-                onClick={() => setIsConfirming(true)}
-                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl transition flex items-center gap-2 shadow-lg shadow-emerald-600/20"
-              >
-                <CheckCircle className="w-4 h-4" /> Verify & Authorize Release
-              </button>
-            ) : (
-              <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2">
-                <span className="text-xs text-amber-300 font-semibold">
-                  Release ₹{verifiedAmount.toLocaleString()} to {task.taskholderPseudonym || 'Node'}?
-                </span>
+          <div className="mt-6 border-t border-[#242424] pt-4">
+            {isRejecting ? (
+              <div className="flex items-center justify-end gap-3 w-full">
                 <button
-                  onClick={handleConfirm}
-                  disabled={isSigning}
-                  className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-lg transition flex items-center gap-1.5"
+                  type="button"
+                  onClick={() => setIsRejecting(false)}
+                  className="px-4 py-2 text-sm font-semibold text-neutral-400 hover:text-white transition"
                 >
-                  {isSigning ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      Signing in Petra...
-                    </>
-                  ) : (
-                    'Confirm Blockchain Sign-Off'
-                  )}
+                  Back
                 </button>
+                <button
+                  type="button"
+                  onClick={handleReject}
+                  className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white font-bold text-sm rounded-xl transition flex items-center gap-1.5 shadow-lg shadow-red-600/20"
+                >
+                  <XCircle className="w-4 h-4" /> Confirm Rejection & Send Feedback
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 w-full">
+                <button
+                  type="button"
+                  onClick={() => setIsRejecting(true)}
+                  className="px-4 py-2 text-xs font-bold text-red-400 hover:text-red-300 bg-red-950/40 hover:bg-red-900/60 border border-red-800/60 rounded-xl transition flex items-center gap-1.5 w-full sm:w-auto justify-center"
+                >
+                  <XCircle className="w-3.5 h-3.5" /> Deny & Request Revision
+                </button>
+
+                <div className="flex items-center justify-end gap-3 w-full sm:w-auto">
+                  <button
+                    onClick={onClose}
+                    className="px-4 py-2 text-sm font-semibold text-neutral-400 hover:text-white transition"
+                  >
+                    Cancel
+                  </button>
+
+                  {!isConfirming ? (
+                    <button
+                      onClick={() => setIsConfirming(true)}
+                      className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl transition flex items-center gap-2 shadow-lg shadow-emerald-600/20"
+                    >
+                      <CheckCircle className="w-4 h-4" /> Verify & Authorize Release
+                    </button>
+                  ) : (
+                    <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2">
+                      <span className="text-xs text-amber-300 font-semibold">
+                        Release ₹{verifiedAmount.toLocaleString()} to {task.taskholderPseudonym || 'Node'}?
+                      </span>
+                      <button
+                        onClick={handleConfirm}
+                        disabled={isSigning}
+                        className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-lg transition flex items-center gap-1.5"
+                      >
+                        {isSigning ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            Signing in Petra...
+                          </>
+                        ) : (
+                          'Confirm Blockchain Sign-Off'
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>

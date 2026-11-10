@@ -12,7 +12,6 @@ interface SectorScore {
   completedTasks: number;
   totalTasks: number;
   fundsDisbursed: number;
-  fundsSaved: number;
   efficiencyScore: number;
 }
 
@@ -29,21 +28,15 @@ const DomainLeaderboard: React.FC<DomainLeaderboardProps> = ({ tasks, budgets })
     const disbursed = sectorTasks
       .filter((t) => t.status === 'Approved')
       .reduce((sum, t) => sum + (t.actualMoneySpent || t.moneyAllocated), 0);
-    
-    // Savings = Budget Allocated - Actual Spent
-    const saved = sectorTasks
-      .filter((t) => t.status === 'Approved' && t.actualMoneySpent)
-      .reduce((sum, t) => sum + Math.max(0, t.moneyAllocated - (t.actualMoneySpent || t.moneyAllocated)), 0);
 
-    // Efficiency Score formula: (Completed * 10) + (Saved / 1000)
-    const efficiency = completed * 15 + Math.round(saved / 1000) + (completed > 0 ? 50 : 0);
+    // Efficiency score formula: (Completed * 20) + baseline bonus for verified delivery
+    const efficiency = completed * 20 + (completed > 0 ? 50 : 0);
 
     return {
       sector: b.sector,
       completedTasks: completed,
       totalTasks: sectorTasks.length,
       fundsDisbursed: disbursed,
-      fundsSaved: saved,
       efficiencyScore: efficiency,
     };
   }).sort((a, b) => b.efficiencyScore - a.efficiencyScore);
@@ -61,7 +54,7 @@ const DomainLeaderboard: React.FC<DomainLeaderboardProps> = ({ tasks, budgets })
             Department Performance & Anti-Corruption Leaderboard
           </h2>
           <p className="text-xs text-neutral-400 mt-0.5">
-            Ranked by task throughput, audit integrity, and public funds saved (Zero individual identities exposed).
+            Ranked by task throughput and verified audit integrity (Zero individual identities exposed).
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -80,7 +73,6 @@ const DomainLeaderboard: React.FC<DomainLeaderboardProps> = ({ tasks, budgets })
               <th className="py-3 px-4 font-semibold">Department Domain</th>
               <th className="py-3 px-4 font-semibold text-center">Tasks Completed</th>
               <th className="py-3 px-4 font-semibold text-right">Funds Disbursed</th>
-              <th className="py-3 px-4 font-semibold text-right text-cyan-400">Taxpayer Funds Saved</th>
               <th className="py-3 px-4 font-semibold text-right">Integrity Score</th>
             </tr>
           </thead>
@@ -135,10 +127,6 @@ const DomainLeaderboard: React.FC<DomainLeaderboardProps> = ({ tasks, budgets })
 
                   <td className="py-3.5 px-4 text-right font-mono font-medium text-emerald-400">
                     ₹ {score.fundsDisbursed.toLocaleString()}
-                  </td>
-
-                  <td className="py-3.5 px-4 text-right font-mono font-bold text-cyan-300">
-                    + ₹ {score.fundsSaved.toLocaleString()}
                   </td>
 
                   <td className="py-3.5 px-4 text-right">

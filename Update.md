@@ -1,232 +1,434 @@
-# TrueLedger: Audit of Mock Implementations & Production Roadmap
+### 1. The 3-Tier Governance Hierarchy
 
-This audit reviews every simulated, mock, and local storage fallback implementation currently present across the TrueLedger application and specifies the concrete architecture, Move contracts, and SDK integrations required to replace them with production systems.
-
----
-
-## Executive Summary Matrix
-
-| # | Component / Domain | Current Implementation (Mock / Fallback) | Target Production Implementation | Priority |
-|---|-------------------|------------------------------------------|----------------------------------|----------|
-| **1** | **Smart Contract Deployment & State** | Local memory cache in `taskLedgerService.ts` + `localStorage` (`trueledger_tasks_v3`) with mock tx fallback | Compiled & published Move bytecode on Aptos Devnet/Mainnet with Aptos Indexer / GraphQL sync | **Critical (P0)** |
-| **2** | **Proof Document Storage (IPFS)** | In-browser Base64 Data URL via `FileReader` + mock CID (`ipfs://bafybeicg7e2m5...`) | Real decentralized pinning via Pinata / Web3.Storage (`w3up-client`) with IPFS gateway resolution | **High (P1)** |
-| **3** | **Regulator Identity & Aadhaar Verification** | Simulated OpenCV + Tesseract OCR timer (`setTimeout`) with hardcoded profile data in `AadhaarVerificationModal.tsx` | Client-side `tesseract.js` OCR or Zero-Knowledge Anon-Aadhaar verification (`@anon-aadhaar/react`) | **High (P1)** |
-| **4** | **Taskholder Profile & Identity** | Client falls back to `localStorage.getItem('trueledger_user_<addr>')` and empty `create_user()` | Call `user::create_user_with_info(name, field)` on-chain; query profile via `aptos.view()` | **Medium (P2)** |
-| **5** | **Multi-Regulator Synchronized Treasury** | In-memory `MACRO_BUDGETS` updated across browser tabs via `taskLedgerService` | Shared on-chain `GlobalBudgetPool` resource in `task_manager.move` with single source of truth | **High (P1)** |
-| **6** | **Decentralized Task Broadcast & Notifications** | Local event emitter in `taskLedgerService` with `Broadcast Scope: ALL` | On-chain event listener on `NotificationAdded` and `TaskCreated` via Aptos Indexer / Event Stream | **Medium (P2)** |
-
----
-
-## Detailed Audit Breakdown
-
-### 1. Smart Contract Deployment & On-Chain State Sync
-- **Current Mock / Fallback:**
-  - `taskLedgerService.ts` maintains tasks (`INITIAL_TASKS`) and department allocations (`MACRO_BUDGETS`) in browser storage.
-  - When Petra wallet submits `approve_task` or `return_surplus`, a preflight check (`aptos.getAccountModule`) detects if the module is published. If the module is not yet published on the active network epoch, a mock 64-char transaction hash `0x...` is generated to prevent the user flow from stalling.
-- **Root Cause:**
-  - The Aptos CLI is not installed in the system PATH, so `contracts/sources/task_manager.move` and `contracts/sources/user.move` have not yet been published to the module address (`0x3c6d41e6d9cb82e798e861606d8ef50f90b6aedb1ef66e97c33f8879013bce6b`).
-- **Production Replacement Plan:**
-  1. Install Aptos CLI (`winget install Aptos.AptosCli` or binary download).
-  2. Run `aptos init --network devnet` using the deployer private key.
-  3. Publish contracts:
-     ```bash
-     cd contracts
-     aptos move compile
-     aptos move publish --named-addresses account_addr=0x3c6d41e6d9cb82e798e861606d8ef50f90b6aedb1ef66e97c33f8879013bce6b
-     ```
-  4. Initialize global pool via entry function `task_manager::initialize_global_ledger(admin)`.
-  5. Replace `taskLedgerService.ts` local cache queries with Aptos client calls:
-     ```typescript
-     const pool = await aptos.getAccountResource({
-       accountAddress: MODULE_ADDRESS,
-       resourceType: `${MODULE_ADDRESS}::task_manager::GlobalBudgetPool`,
-     });
-     ```
-
----
-
-### 2. Proof of Work Document Storage (IPFS)
-- **Current Mock / Fallback:**
-  - In `TaskProofSubmissionModal.tsx`, when a taskholder uploads a PDF/Word document, `FileReader.readAsDataURL()` converts the file to a base64 string stored in the browser.
-  - The IPFS CID is generated as a mock placeholder (`ipfs://bafybeicg7e2m56v2q3o7x...`).
-- **Production Replacement Plan:**
-  1. Integrate Pinata or Web3.Storage API in `client/src/services/ipfsService.ts`.
-  2. Upload workflow:
-     ```typescript
-     export async function uploadProofToIPFS(file: File): Promise<{ cid: string; gatewayUrl: string }> {
-       const formData = new FormData();
-       formData.append('file', file);
-       const res = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
-         method: 'POST',
-         headers: { Authorization: `Bearer ${PINATA_JWT}` },
-         body: formData,
-       });
-       const data = await res.json();
-       return {
-         cid: data.IpfsHash,
-         gatewayUrl: `https://gateway.pinata.cloud/ipfs/${data.IpfsHash}`,
-       };
-     }
-     ```
-  3. Submit the true IPFS CID to the blockchain via `task_manager::submit_task_proof(account, task_id, actual_spent, cid)`.
-  4. In `TaskAuditModal.tsx`, inspect the document directly via the immutable IPFS gateway URL.
-
----
-
-### 3. Regulatory Identity & Aadhaar Verification (OCR)
-- **Current Mock / Fallback:**
-  - `AadhaarVerificationModal.tsx` simulates OpenCV preprocessing and Tesseract OCR with `setTimeout` delays and seeds mock profile data (`Shri Vikramaditya Sharma`, DOB `1985-08-15`, Aadhaar `5421 8904 1238`).
-  - Stores authority verification in `localStorage.getItem('trueledger_verified_authority')`.
-- **Production Replacement Plan:**
-  - **Option A (Zero-Knowledge Privacy - Recommended):** Integrate **Anon-Aadhaar** (`@anon-aadhaar/react`).
-    - Taskholders and regulators generate a cryptographic ZK-SNARK proof verifying they possess a valid Indian Aadhaar signed by UIDAI, without revealing their Aadhaar number or address.
-    - Submit the ZK proof on-chain to verify the regulator's authority.
-  - **Option B (Client-Side In-Browser OCR):**
-    - Install `tesseract.js` in client: `npm i tesseract.js`.
-    - Run OCR on the uploaded document inside the browser (zero server transmission).
-    - Parse standard Indian Government ID regular expressions (e.g. `\d{4}\s\d{4}\s\d{4}` for Aadhaar or `[A-Z]{5}[0-9]{4}[A-Z]{1}` for PAN) and check date of birth for 18+ requirement.
-
----
-
-### 4. Taskholder Profile & User Resource
-- **Current Mock / Fallback:**
-  - In `ClientIntroPg.tsx`, user identity checks query `aptos.getAccountResource` for `${MODULE_ADDRESS}::user::User`.
-  - When the module is unavailable, it reads from `localStorage.getItem('trueledger_user_<addr>')`.
-  - When creating a profile, it was calling `create_user` (which defaults to "John Doe") and saving custom names only in `localStorage`.
-- **Production Replacement Plan:**
-  1. Call the newly created `user::create_user_with_info(account, name, field)` entrypoint:
-     ```typescript
-     const tx: InputTransactionData = {
-       data: {
-         function: `${MODULE_ADDRESS}::${MODULES.user}::create_user_with_info`,
-         functionArguments: [finalName, finalField],
-       },
-     };
-     await signAndSubmitTransaction(tx);
-     ```
-  2. Use Aptos View functions (`user::get_name`, `user::get_field`, `user::user_exists`) to fetch profile data directly from chain state.
-
----
-
-### 5. Multi-Regulator Shared Department Budget Pool
-- **Current Mock / Fallback:**
-  - Department budget numbers (`Healthcare: ₹2,00,000`, `Infrastructure: ₹4,00,000`, etc.) and multi-regulator deduction syncs are currently managed by `taskLedgerService.ts` in browser storage.
-- **Production Replacement Plan:**
-  - Move module `contracts/sources/task_manager.move` already defines:
-    ```move
-    struct DepartmentPool has store {
-        sector: String,
-        total_budget: u64,
-        committed_funds: u64,
-        disbursed_funds: u64,
-    }
-    struct GlobalBudgetPool has key {
-        pools: Table<String, DepartmentPool>,
-        admin: address,
-    }
-    ```
-  - Upon contract publish, the admin executes `allocate_department_budget(admin, sector, total_budget)`.
-  - When any regulator calls `add_notification` or `approve_task`, the smart contract updates `committed_funds` and `disbursed_funds` in `GlobalBudgetPool`.
-  - All regulators fetch the identical department pool balance directly from the resource on chain.
-
----
-
-### 6. Decentralized Event Ingestion (Aptos Indexer)
-- **Current Mock / Fallback:**
-  - Changes are published locally using `taskLedger.subscribe(callback)`.
-- **Production Replacement Plan:**
-  - Use Aptos Event Polling or the Aptos Indexer GraphQL endpoint:
-    ```graphql
-    query GetDepartmentEvents($address: String!) {
-      events(
-        where: { account_address: { _eq: $address }, indexed_type: { _like: "%task_manager::%" } }
-        order_by: { transaction_version: desc }
-      ) {
-        data
-        type
-        transaction_version
-      }
-    }
-    ```
-  - Automatically updates the notification bell and active task lists in real time when peer regulators or taskholders perform actions.
-
----
-
-## Action Plan: Recommended Implementation Order
-
-```mermaid
-flowchart TD
-    Step1["Step 1: Install Aptos CLI & Publish Contracts<br/>(user.move & task_manager.move)"] --> Step2["Step 2: Initialize On-Chain Global Budget Pool<br/>(allocate_department_budget)"]
-    Step2 --> Step3["Step 3: Connect Real IPFS Service<br/>(Pinata / Web3.Storage for Proof Docs)"]
-    Step3 --> Step4["Step 4: Upgrade Identity Verification<br/>(tesseract.js or Anon-Aadhaar ZK Proofs)"]
-    Step4 --> Step5["Step 5: Replace LocalStorage Service<br/>(Full Aptos Client & Indexer Event Stream)"]
+```
+       ┌────────────────────────────────────────────────────────┐
+       │                 STATE GOVERNMENT (Apex)                 │
+       │   • Macro Treasury Pool (₹5,000,000+)                   │
+       │   • Allocates budgets to Department Regulators          │
+       │   • Approves / Rejects Regulator Fund Increase Requests │
+       │   • Solvency Guard: Enforces Reserve >= 0 invariant     │
+       └───────────────────────────┬────────────────────────────┘
+                                   │ Allocates / Top-ups
+                                   ▼
+       ┌────────────────────────────────────────────────────────┐
+       │             DEPARTMENT REGULATORS (Class-1)            │
+       │   • Manages Department Pool (Health, Infra, Edu, etc.) │
+       │   • Creates & broadcasts tasks to field workers        │
+       │   • Audits work proof & disburses approved funds       │
+       │   • Requests Budget Increases from Government          │
+       └───────────────────────────┬────────────────────────────┘
+                                   │ Assigns / Verifies
+                                   ▼
+       ┌────────────────────────────────────────────────────────┐
+       │              FIELD TASKHOLDERS (Ground Tier)           │
+       │   • Executes tasks & spends funds on verified work     │
+       │   • Uploads proof documents (CIDs)                     │
+       │   • Returns unspent surplus back to Department Pool    │
+       └────────────────────────────────────────────────────────┘
 ```
 
-# TrueLedger: Codebase Cleanup & Deprecation Checklist
+---
 
-This checklist identifies all dead files, legacy prototype components, redundant re-export shims, and obsolete mock data that should be removed to achieve a clean, production-ready codebase.
+### 2. Workaround: Domain-Specific Task Enforcement with 1 Wallet
+
+#### The Problem
+If a regulator’s wallet is strictly locked on-chain to a single domain (e.g., `Healthcare`), a tester with only one Petra wallet cannot test or verify Infrastructure, Education, or Technology workflows without switching private keys or setting up multiple testnet accounts.
+
+#### Recommended Workaround: "Active Domain Portfolio" (Capability Pattern)
+Instead of hardcoding `1 Wallet = 1 Domain`, we implement an **Active Domain Context & Multi-Domain Capability** pattern:
+
+1. **Move Contract Design**:
+   - The user/regulator profile stores `authorized_domains: vector<String>` instead of a single string.
+   - For demo/development mode, a wallet can be granted `["*"]` (Universal Authority) or multiple domains (e.g., `["Healthcare", "Infrastructure"]`).
+2. **Frontend UI Switcher ("Acting As Domain")**:
+   - In the Regulator and Government dashboards, a header selector lets the regulator choose their **Active Operating Domain**:
+     ```
+     [ Active Domain: Healthcare ▾ ] (Options: Healthcare, Infrastructure, Education, All Domains)
+     ```
+   - **Task Filter Enforcement**: When `Healthcare` is active, the regulator *only* sees Healthcare tasks, Healthcare budget pools, and Healthcare fund requests.
+   - If they switch to `Infrastructure`, the interface instantly re-scopes to Infrastructure tasks and budgets.
+3. **Petra Wallet Native Sub-Accounts (Optional Alternative)**:
+   - Petra allows creating multiple sub-accounts under the same seed phrase in seconds (`Account 1`, `Account 2`, `Account 3`).
+   - However, the **Active Domain Context** in the UI allows smooth testing without needing to disconnect and reconnect Petra wallets every time.
 
 ---
 
-## 1. Dead & Orphaned Files (Safe for Immediate Deletion)
+### 3. Main Page Transformation: Dropdown Role Selection
 
-These files are completely unused, commented out, or remnants of early prototypes:
+#### Current State
+- `IntroPg.tsx` has two static cards (`Field Taskholder` vs `Department Regulator`) with an "OR" divider.
 
-| Path | Description | Reason for Removal |
-| :--- | :--- | :--- |
-| `client/src/components/Navbar.tsx` | Old placeholder navigation component (100% commented out). | Superseded by responsive in-page navbars in `ClientIntroPg.tsx`, `ServerIntroPg.tsx`, and `LeaderboardPg.tsx`. |
-| `client/src/components/Contact.tsx` | Unused contact form stub. | Not imported by any route or component in the app. |
-| `client/src/components/User/Dashboard.tsx` | Early prototype user dashboard with mock tabs. | Replaced by `ClientIntroPg.tsx` and `ServerIntroPg.tsx`. |
-| `client/src/components/User/Tasks.tsx` | Early prototype task list. | Replaced by `TodoList.tsx` and `TodoItem.tsx`. |
-| `client/src/components/data/index.ts` | Static mock array (`taskList` with "Doctor Appointment", "Call Plumber"). | Not imported anywhere; superseded by `taskLedgerService.ts`. |
-| `about.md` (root directory) | Raw text copy of the initial project brief. | Informational notes superseded by the Master Phase Plan and Audit reports in documentation. |
-
----
-
-## 2. Redundant Folder & Re-Export Shims (`components/` vs `utlis/`)
-
-Early in the project, a misspelled directory `client/src/utlis/` was created. Later, 2-line re-export files were placed in `client/src/components/` to forward to `utlis/`:
-
-- `client/src/components/MoneyCard.tsx` ➔ re-exports from `../utlis/MoneyCard`
-- `client/src/components/NotificationsList.tsx` ➔ re-exports from `../utlis/NotificationsList`
-- `client/src/components/RequestInput.tsx` ➔ re-exports from `../utlis/RequestInput`
-- `client/src/components/TodoItem.tsx` ➔ re-exports from `../utlis/TodoItem`
-- `client/src/components/TodoList.tsx` ➔ re-exports from `../utlis/TodoList`
-
-### Recommended Cleanup:
-1. Move the real components from `client/src/utlis/` directly into `client/src/components/`.
-2. Delete the redundant 2-line re-export shims.
-3. Remove the misspelled `client/src/utlis/` directory entirely.
-
----
-
-## 3. Legacy Contracts Cleaned in Git
-
-Verify that the old monolithic Move contracts are fully purged from version control:
-- `contracts/sources/notifications.move` (Deleted ✓ — superseded by `contracts/sources/task_manager.move`)
-- `contracts/sources/todolist.move` (Deleted ✓ — superseded by `contracts/sources/task_manager.move` & `user.move`)
-- `client/src/utlis/task/NotificationContext.tsx` & `TaskContext.tsx` (Deleted ✓)
+#### Proposed Redesign
+1. **Unified Role Selector Dropdown**:
+   - Replace the static binary cards with a dropdown selector:
+     ```
+     ┌──────────────────────────────────────────────────────────┐
+     │  Select Your Governance Tier:                           │
+     │  ┌────────────────────────────────────────────────────┐  │
+     │  │ 🏛️ State Government (Treasury & Allocation)       ▼│  │
+     │  │   🧑‍🔧 Field Taskholder (Execution & Proof)          │  │
+     │  │   🛡️ Department Regulator (Audit & Sector Budget)   │  │
+     │  │   🏛️ State Government (Treasury & Allocation)       │  │
+     │  └────────────────────────────────────────────────────┘  │
+     │                                                          │
+     │  [ Enter TrueLedger Portal → ]                           │
+     └──────────────────────────────────────────────────────────┘
+     ```
+   - Dynamic role card preview underneath the dropdown highlighting the selected role’s description, authority level, and active wallet status.
+2. **Global Header Role Switcher**:
+   - In all interior pages (`/clientpg`, `/serverpg`, `/govtpg`), add a discreet badge/dropdown in the top navigation:
+     ```
+     [ 🏛️ Govt Mode ▾ ]  -->  Easily switch between Taskholder / Regulator / Govt
+     ```
+3. **Blockchain Identity Pattern for Government**:
+   - Government profile is registered on Aptos using the exact same pattern:
+     - Cryptographic signature via `signMessage` or `user::create_user_with_info(account, "State Treasury Ministry", "Government")`.
+     - Stored under `trueledger_user_<addr>` with `role: 'government'`.
 
 ---
 
-## 4. Hardcoded Mock Data & Fallback Flags
+### 4. Government Core Responsibilities & Closing the Operational Gaps
 
-Before final production launch:
+#### Gap A: Master Macro Treasury Allocation
+- **State Treasury Pool**: The Government initializes or controls the master sovereign treasury (e.g., ₹5,000,000 total reserve).
+- **Department Allocation Slider / Form**: Govt can allocate or top up individual department pools (`Healthcare`, `Infrastructure`, `Education`, `Agriculture`, `Technology`, `Contingency`).
+- **Solvency Guard**: The contract and service strictly prevent overallocating:
+  $$\text{Treasury Reserve} = \text{Total Sovereign Budget} - \sum \text{Allocated Department Budgets} \ge 0$$
+  If Government attempts to allocate more than the available reserve, the transaction aborts with `E_INSUFFICIENT_TREASURY_RESERVE`.
 
-1. **`INITIAL_TASKS` in `taskLedgerService.ts`**:
-   - Currently seeds 3 pre-filled dummy tasks ("Deliver Medical Supplies", "Construct Primary Healthcare Wing", "Solar Array Installation") into `localStorage`.
-   - **Production Action:** Gate behind an environment check (`import.meta.env.VITE_USE_MOCK_LEDGER === 'true'`). In production mode, initialize with an empty array `[]` and fetch exclusively from chain state.
-2. **`MACRO_BUDGETS` Hardcoded Seed**:
-   - Currently hardcodes initial departmental budget percentages (`Healthcare: 12%`, `Infrastructure: 24%`, etc.).
-   - **Production Action:** In production, budgets should be populated exclusively from the Level 1 Budget Allocator's on-chain allocation transaction (`task_manager::allocate_department_budget`).
-3. **Simulated Hash Fallbacks (`0x...`)**:
-   - Once the Move modules are published on Devnet/Mainnet, remove the fallback mock hash generator so transactions strictly reflect true on-chain transactions or fail visibly with Petra wallet feedback.
+#### Gap B: Regulator Budget Request & Re-allocation Protocol
+1. **Regulator Side**:
+   - In `ServerIntroPg.tsx` (Regulator Portal), add a **"Request Additional Budget"** button in `DepartmentBudgetOverview`.
+   - Opens a modal where the regulator specifies:
+     - Sector (e.g., `Healthcare`)
+     - Requested Amount (e.g., ₹50,000)
+     - Justification / Purpose (e.g., *"Emergency rural medical supply replenishment for District 4"*)
+   - Submits request on-chain/in-ledger as `Pending_Govt_Review`.
+2. **Government Side (`GovtIntroPg.tsx`)**:
+   - **"Budget Requests Inbox"**:
+     - Lists all incoming requests from regulators with current department burn rate and justification.
+     - **Approve**: Automatically debits State Treasury Reserves, credits the department's `totalBudget`, emits `BudgetRequestApproved` event, and signs via Petra.
+     - **Reject**: Rejects with an audit remark (e.g., *"Current quarter quota exceeded. Please return surplus first."*).
+
+#### Gap C: Solvency & Deficit Prevention Monitor
+- Real-time macro dashboard:
+  - **Sovereign Reserves**: Unallocated liquid funds in government treasury.
+  - **Department Commitments**: Funds locked in ongoing tasks.
+  - **Disbursed Capital**: Funds paid out upon verified proof.
+  - **Reclaimed Surplus**: Funds returned by honest taskholders.
+- **Negative Balance Prevention**: Tasks cannot be created if `Department Available Balance < Task Money Allocated`. Regulators are forced to request more funds from Government first.
+
+#### Gap D: Leftover Governance Features
+- **Department Efficiency Leaderboard**: Ranks departments by surplus returned vs. funds disbursed.
+- **Emergency Department Freeze / Pause**: Allows Government to freeze task creations in a department if fraud is flagged.
 
 ---
 
-## 5. UI Elements to Deprecate
+### 5. Move Smart Contract Updates (`task_manager.move`)
 
-1. **Target Taskholder Wallet Address Inputs**:
-   - Completely remove any remaining raw address inputs in task creation forms to preserve zero-knowledge anti-corruption privacy.
-2. **"Not Registered? Sign Up" vs Direct Wallet Auth**:
-   - In [`IntroPg.tsx`](file:///d:/New%20folder%20(4)/SidFiles/Projectd/DecentralizedVote/client/src/pages/IntroPg.tsx), having both "Login" and "Not Registered? Sign Up" buttons causes confusion since Aptos authentication is wallet-driven. Simplify to single "Connect Wallet & Enter Portal" action that automatically detects registration on-chain.
+We will introduce a `GovernmentTreasury` resource and budget request flow:
+
+```move
+/// State Treasury Resource held by the Admin / Government
+struct GovernmentTreasury has key {
+    total_treasury: u64,
+    allocated_treasury: u64,
+    unallocated_reserves: u64,
+    budget_requests: Table<u64, BudgetRequest>,
+    request_counter: u64,
+}
+
+struct BudgetRequest has store, drop, copy {
+    id: u64,
+    regulator_address: address,
+    sector: String,
+    requested_amount: u64,
+    reason: String,
+    status: String, // "Pending", "Approved", "Rejected"
+    created_at: u64,
+    reviewed_at: u64,
+}
+
+// Key Entry Functions:
+// 1. initialize_government_treasury(admin: &signer, total_budget: u64)
+// 2. allocate_funds_to_department(govt: &signer, sector: String, amount: u64)
+// 3. submit_budget_request(regulator: &signer, sector: String, amount: u64, reason: String)
+// 4. review_budget_request(govt: &signer, request_id: u64, approve: bool, remarks: String)
+```
+
+---
+
+### 6. Frontend Architectural Blueprint
+
+```
+client/src/
+├── pages/
+│   ├── IntroPg.tsx              <- Updated: Role dropdown selector (Taskholder / Regulator / Govt)
+│   ├── ClientIntroPg.tsx         <- Taskholder Portal
+│   ├── ServerIntroPg.tsx         <- Regulator Portal (Added: "Request Budget from Govt" modal)
+│   └── GovtIntroPg.tsx           <- [NEW] Government Portal (Treasury allocation, request reviews)
+├── components/
+│   ├── RoleSelectorDropdown.tsx <- [NEW] Custom dropdown for IntroPg and portal headers
+│   ├── BudgetRequestModal.tsx   <- [NEW] For Regulators to request additional funds
+│   ├── GovtTreasuryOverview.tsx <- [NEW] Master solvency pie chart, reserves, and allocation controls
+│   └── GovtRequestReviewModal.tsx <- [NEW] Review, approve, or reject regulator requests
+└── services/
+    └── taskLedgerService.ts     <- Updated: Treasury state, BudgetRequest models, solvency invariants
+```
+
+---
+
+### 7. Phased Implementation Roadmap
+
+When you are ready to proceed with the implementation, we can execute in 4 structured steps:
+
+1. **Step 1: Move Contract & Ledger Service Expansion**:
+   - Add `BudgetRequest` and `GovernmentTreasury` data structures and methods to `task_manager.move` and `taskLedgerService.ts`.
+2. **Step 2: Main Page Role Dropdown & Identity**:
+   - Update `IntroPg.tsx` and `RegisterModal.tsx` to support the Government role with the dropdown switcher.
+3. **Step 3: Government Portal (`GovtIntroPg.tsx`)**:
+   - Build the Master Treasury Dashboard, Solvency Monitor, and Budget Request Review Inbox.
+4. **Step 4: Regulator Fund Request Flow & Domain Context**:
+   - Add the "Request Funds" button to the Regulator dashboard and implement the "Active Domain Portfolio" dropdown workaround.
+
+
+# Revised Architectural Plan: Automatic Domain Binding & Elimination of Redundant Sector Dropdowns
+
+> **Key Update Added:** Because Domain-Specific Task Enforcement is strictly locked at the identity/session level for **both Taskholders and Regulators**, the manual **Domain/Sector `<select>` dropdown is completely eliminated** from the new task creation and proposal forms (`RequestInput.tsx`). The task domain is automatically and immutably bound to the user's active accredited domain.
+
+---
+
+## 1. Domain Enforcement Matrix (Symmetric Rules)
+
+| Operational Step | Taskholder Rule (Ground Tier) | Regulator Rule (Department Tier) | Government Rule (Apex Tier) |
+|---|---|---|---|
+| **Identity & Scope** | Accredited specialist in active domain (e.g., `Healthcare`) | Appointed Class-1 authority over active department (e.g., `Healthcare`) | Sovereign authority over master state treasury (`Finance / Apex`) |
+| **New Task Creation / Proposal** | **No Dropdown:** Sector is automatically locked to taskholder's domain. Proposes bottom-up task for department approval | **No Dropdown:** Sector is automatically locked to regulator's department. Broadcasts official task with funds from department pool | Allocates sovereign capital across department pools; sets macro fiscal ceilings |
+| **Task Discovery & Bell Feed** | **Strict Filter:** Bell icon only displays broadcasts where `task.sector == taskholder.activeDomain` | Views and manages tasks strictly within appointed department | Full macro ledger transparency across all 3 tiers |
+| **Task Acceptance & Execution** | **Hard Contract Guard:** Can only claim/accept tasks matching active domain. Cross-domain claims abort with `E_UNAUTHORIZED_DOMAIN` | N/A (Regulators disburse and audit, they do not execute) | N/A |
+| **Audit & Fund Release** | Submits proof of work directly to appointed department regulator | Can **only** audit and release funds for tasks belonging to their appointed department | Monitors macro solvency; freezes departments flagged with audit anomalies |
+| **Budget Requests** | N/A | **No Dropdown:** Requests budget increases strictly for their appointed department from Government | Reviews, approves, or rejects regulator requests based on state solvency |
+
+---
+
+## 2. Elimination of the Domain Dropdown in Task Creation (`RequestInput.tsx`)
+
+### The Previous Flow (Prone to Human Error)
+Previously in `RequestInput.tsx`:
+- Both Taskholder and Regulator had an editable `<select>` dropdown with 5 options (`Healthcare`, `Infrastructure`, `Education`, `Agriculture`, `Technology`).
+- A Healthcare regulator could accidentally pick `Education`, resulting in budget pool mismatch or contract errors.
+- A Healthcare taskholder could attempt to propose an `Infrastructure` project outside their competence.
+
+### The New Automated Flow (Zero Redundancy, Zero-Error)
+With strict domain enforcement:
+1. **Dropdown Removed from UI**:
+   - The `<select>` dropdown in `RequestInput.tsx` is completely replaced by an **immutable, verified domain badge**:
+     ```
+     ┌────────────────────────────────────────────────────────┐
+     │ Task Description:                                      │
+     │ [ e.g. Deliver emergency pediatric vaccines to PHC... ]│
+     │                                                        │
+     │ Estimated Budget (₹):      Sector (Auto-Locked):       │
+     │ [ 45,000                ]  [ 🩺 Healthcare 🔒       ] │
+     │                            Verified Accredited Domain  │
+     └────────────────────────────────────────────────────────┘
+     ```
+2. **Deterministic Payload Construction**:
+   - `sector` is automatically derived from the active session context (`user.activeDomain`).
+   - Neither the taskholder nor the regulator ever has to manually select or re-type the sector.
+   - The on-chain transaction payload is bound to this immutable sector, ensuring 100% cryptographic and state integrity.
+
+---
+
+## 3. The Single-Wallet Workaround: "Accredited Domain Context"
+
+### The Challenge
+If a developer/tester has only 1 Petra wallet, how do they test Healthcare, Infrastructure, and Education without being permanently locked out of the other domains?
+
+### The Solution: Multi-Domain Accreditation & Active Domain Context
+1. **Decoupled Identity vs. Active Credential**:
+   - The wallet address (`0x123...`) is the cryptographic signing key.
+   - The user profile holds an accreditation array (`authorized_domains: vector<String>`). In demo mode, a wallet is granted universal accreditation across sectors.
+2. **Header Active Domain Selector**:
+   - In both `ClientIntroPg` and `ServerIntroPg`, the top bar features an **Active Domain Switcher**:
+     ```
+     Active Domain: [ 🩺 Healthcare ▾ ]  (Options: Healthcare, Infrastructure, Education, Agriculture, Tech)
+     ```
+   - When set to `Healthcare`:
+     - Taskholder bell only rings for Healthcare tasks.
+     - New task creation in `RequestInput.tsx` automatically displays and locks to `🩺 Healthcare 🔒`.
+     - Regulator audits only Healthcare work.
+   - When switched to `Infrastructure`:
+     - Entire portal instantly re-scopes to Infrastructure.
+     - New task creation in `RequestInput.tsx` automatically displays and locks to `🏗️ Infrastructure 🔒`.
+     - All single-wallet testing works seamlessly while maintaining 100% strict domain isolation at every layer.
+
+---
+
+## 4. Main Page Transformation: Dropdown Role & Domain Selection
+
+### New Entry Flow on `IntroPg.tsx`
+Replace the two static cards with a centralized **Governance Onboarding Card**:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                       TRUELEDGER                             │
+│       Decentralized Fund Allocation & Zero-Corruption Audit │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  1. Select Governance Tier:                                 │
+│     ┌─────────────────────────────────────────────────────┐ │
+│     │ 🏛️ State Government (Treasury & Macro Solvency)   ▼ │ │
+│     │   🧑‍🔧 Field Taskholder (Accredited Task Execution)   │ │
+│     │   🛡️ Department Regulator (Audit & Department Pool) │ │
+│     │   🏛️ State Government (Treasury & Macro Solvency)   │ │
+│     └─────────────────────────────────────────────────────┘ │
+│                                                             │
+│  2. Select Operating Domain (for Taskholder & Regulator):   │
+│     ┌─────────────────────────────────────────────────────┐ │
+│     │ 🩺 Healthcare & Medical Relief                     ▼ │ │
+│     │   🏗️ Infrastructure & Public Works                   │ │
+│     │   📚 Education & Skill Development                  │ │
+│     │   🌾 Agriculture & Rural Welfare                    │ │
+│     │   💻 Technology & Digital Public Infrastructure     │ │
+│     └─────────────────────────────────────────────────────┘ │
+│                                                             │
+│  [ Connect Wallet & Enter Portal → ]                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+- **Routing**:
+  - `Taskholder` + `Healthcare` $\rightarrow$ `/clientpg` (locked to Healthcare).
+  - `Regulator` + `Healthcare` $\rightarrow$ `/serverpg` (locked to Healthcare).
+  - `Government` $\rightarrow$ `/govtpg` (macro sovereign treasury).
+
+---
+
+## 5. Government Core System & Closing Operational Gaps
+
+### Gap 1: Master Macro Treasury Allocation
+- **State Treasury Pool**: Sovereign reserve (e.g., ₹5,000,000 total).
+- **Hard Solvency Guard (No Negative Balance)**:
+  $$\text{Unallocated Reserves} = \text{Total Sovereign Treasury} - \sum_{i} \text{DepartmentBudget}_i \ge 0$$
+  $$\text{Department Free Balance} = \text{TotalBudget}_i - \text{CommittedFunds}_i - \text{DisbursedFunds}_i \ge 0$$
+  - Tasks cannot be created if `Department Free Balance < Task Cost`.
+  - Treasury cannot allocate to a department if `Unallocated Reserves < Allocation Amount`.
+
+### Gap 2: Regulator Budget Increase Request Protocol
+1. **Regulator Submits Request**:
+   - In `ServerIntroPg.tsx`, clicking **"Request Additional Budget"** opens a modal.
+   - **No Sector Dropdown:** Sector is automatically locked to the regulator's active department.
+   - Regulator specifies: `Requested Amount` and `Justification`.
+   - Records an on-chain `BudgetRequest` with status `Pending_Govt_Review`.
+2. **Government Adjudication Dashboard (`GovtIntroPg`)**:
+   - **Incoming Requests Inbox**: Reviews request, justification, and department burn rate.
+   - **Approve**: Decrements `Unallocated Reserves`, increments the department's `totalBudget`, emits `BudgetRequestApproved`, and signs via Petra.
+   - **Reject**: Rejects with official audit feedback.
+
+### Gap 3: Macro Audit & Circuit Breakers
+- **Live Solvency Monitor**: Real-time gauge of State Reserves vs. Locked Commitments vs. Verified Disbursements vs. Reclaimed Surplus.
+- **Emergency Department Freeze**: Government can temporarily freeze task disbursements in a department if irregularities or audit failures occur.
+
+---
+
+## 6. Move Smart Contract Updates (`task_manager.move` & `user.move`)
+
+### Added to `user.move`:
+```move
+const E_UNAUTHORIZED_DOMAIN: u64 = 11;
+
+/// Query whether an account is authorized for a specific sector
+#[view]
+public fun is_authorized_for_domain(account: address, sector: String): bool acquires User {
+    if (!exists<User>(account)) { return false };
+    let user = borrow_global<User>(account);
+    user.field == sector || user.field == string::utf8(b"Universal") || user.field == string::utf8(b"Government")
+}
+```
+
+### Added to `task_manager.move`:
+```move
+/// Government Sovereign Treasury
+struct GovernmentTreasury has key {
+    total_treasury: u64,
+    unallocated_reserves: u64,
+    budget_requests: Table<u64, BudgetRequest>,
+    request_counter: u64,
+}
+
+struct BudgetRequest has store, drop, copy {
+    id: u64,
+    regulator_address: address,
+    sector: String,
+    requested_amount: u64,
+    reason: String,
+    status: String, // "Pending", "Approved", "Rejected"
+    created_at: u64,
+    reviewed_at: u64,
+}
+
+/// Taskholder accepts notification - ENFORCING DOMAIN INTEGRITY
+public entry fun accept_notification_enforced(
+    account: &signer,
+    notification_id: u64,
+    taskholder_domain: String
+) acquires NotificationManager, TaskManager {
+    // Assert taskholder_domain == notification.sector
+    // Prevents cross-domain task claiming
+}
+
+/// Regulator budget request entrypoints
+public entry fun submit_budget_request(
+    regulator: &signer,
+    sector: String,
+    amount: u64,
+    reason: String
+) acquires GovernmentTreasury;
+
+public entry fun review_budget_request(
+    govt: &signer,
+    request_id: u64,
+    approve: bool,
+    rejection_reason: String
+) acquires GovernmentTreasury, DepartmentLedger;
+```
+
+---
+
+## 7. Frontend Architectural File Map
+
+```
+client/src/
+├── pages/
+│   ├── IntroPg.tsx                   <- Updated: Dropdown role & domain selector
+│   ├── ClientIntroPg.tsx              <- Taskholder Portal (Domain-scoped tasks, proposals & bell)
+│   ├── ServerIntroPg.tsx              <- Regulator Portal (Domain-scoped audits, tasks & budget request modal)
+│   └── GovtIntroPg.tsx                <- [NEW] Government Portal (Treasury allocation & request review inbox)
+├── components/
+│   ├── RequestInput.tsx              <- Updated: DROPDOWN REMOVED. Sector auto-locked to active domain badge
+│   ├── ActiveDomainContextBar.tsx     <- [NEW] Header selector for active accredited domain
+│   ├── BudgetRequestModal.tsx        <- [NEW] Regulator form to request additional funds (Sector auto-locked)
+│   ├── GovtTreasuryOverview.tsx      <- [NEW] Solvency pie chart, reserve status & emergency freeze
+│   ├── GovtRequestReviewModal.tsx     <- [NEW] Govt modal to approve / reject regulator requests
+│   ├── NotificationsList.tsx         <- Updated: Strictly filters by active domain
+│   └── TodoList.tsx                  <- Updated: Strictly filters by active domain
+└── services/
+    └── taskLedgerService.ts          <- Updated: Treasury models, BudgetRequest state, domain validation guards
+```
+
+---
+
+## 8. Verification Matrix
+
+| Test Scenario | Action | Expected Result |
+|---|---|---|
+| **Domain Dropdown in Task Creation** | Open `RequestInput.tsx` as Taskholder or Regulator | ✅ **Verified**: No manual `<select>` dropdown exists; sector is displayed as an immutable badge matching the active domain. |
+| **Cross-Domain Task Claim** | Taskholder in `Healthcare` attempts to claim an `Infrastructure` task | ❌ **Blocked**: Notification is hidden from bell; direct claim call rejected with `E_UNAUTHORIZED_DOMAIN`. |
+| **Cross-Domain Audit** | Regulator in `Healthcare` attempts to approve an `Education` task | ❌ **Blocked**: Task does not appear in audit queue; audit button disabled. |
+| **Active Domain Switching** | Single wallet switches active domain from `Healthcare` to `Infrastructure` | ✅ **Scoped**: Task list, budget, and task creation badge immediately re-scope to Infrastructure with no wallet reconnection. |
+| **Treasury Solvency Check** | Govt attempts to allocate ₹600,000 when unallocated reserves are ₹400,000 | ❌ **Blocked**: Solvency guard prevents negative reserve balance. |
+| **Budget Request Flow** | Regulator requests ₹50,000 for `Healthcare` $\rightarrow$ Govt reviews & approves | ✅ **Transferred**: Government unallocated reserve drops by ₹50,000; Healthcare department total budget increases by ₹50,000. |
+
+---
+
+Please let me know if this updated plan aligns with your vision or if you would like any additional refinements before we begin!

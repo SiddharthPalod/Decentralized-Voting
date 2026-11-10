@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { LedgerTask } from '../services/taskLedgerService';
-import { Upload, FileText, CheckCircle, X, DollarSign, Loader2, Sparkles } from 'lucide-react';
+import { Upload, FileText, CheckCircle, X, DollarSign, Loader2, Sparkles, AlertTriangle } from 'lucide-react';
 import { uploadFileToPinata } from '../services/ipfsService';
 
 interface TaskProofSubmissionModalProps {
@@ -25,13 +25,23 @@ const TaskProofSubmissionModal: React.FC<TaskProofSubmissionModalProps> = ({
 }) => {
   if (!isOpen || !task) return null;
 
-  const [actualMoneySpent, setActualMoneySpent] = useState<number>(task.moneyAllocated);
-  const [documentName, setDocumentName] = useState<string>('');
-  const [documentUrl, setDocumentUrl] = useState<string>('');
-  const [ipfsCid, setIpfsCid] = useState<string>('');
-  const [completionNotes, setCompletionNotes] = useState<string>('');
+  const [actualMoneySpent, setActualMoneySpent] = useState<number>(task.actualMoneySpent || task.moneyAllocated);
+  const [documentName, setDocumentName] = useState<string>(task.proofDocumentName || '');
+  const [documentUrl, setDocumentUrl] = useState<string>(task.proofDocumentUrl || '');
+  const [ipfsCid, setIpfsCid] = useState<string>(task.proofDocumentCid || '');
+  const [completionNotes, setCompletionNotes] = useState<string>(task.completionNotes || '');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string>('');
+
+  useEffect(() => {
+    if (task) {
+      setActualMoneySpent(task.actualMoneySpent || task.moneyAllocated);
+      setDocumentName(task.proofDocumentName || '');
+      setDocumentUrl(task.proofDocumentUrl || '');
+      setIpfsCid(task.proofDocumentCid || '');
+      setCompletionNotes(task.completionNotes || '');
+    }
+  }, [task]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -128,6 +138,17 @@ const TaskProofSubmissionModal: React.FC<TaskProofSubmissionModalProps> = ({
           </div>
         </div>
 
+        {/* Regulator Revisions Required Notice if Audit Denied */}
+        {task.auditFeedback && (
+          <div className="mb-4 p-3 bg-red-950/40 border border-red-800/70 rounded-xl text-xs text-red-200">
+            <div className="flex items-center gap-1.5 font-bold text-red-300 mb-1">
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+              Regulator Revisions Required:
+            </div>
+            <p className="text-neutral-300 leading-relaxed">{task.auditFeedback}</p>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Actual Expense Field */}
           <div>
@@ -139,8 +160,19 @@ const TaskProofSubmissionModal: React.FC<TaskProofSubmissionModalProps> = ({
               type="number"
               max={task.moneyAllocated}
               min={1}
-              value={actualMoneySpent}
-              onChange={(e) => setActualMoneySpent(Number(e.target.value))}
+              step={1}
+              value={actualMoneySpent || ''}
+              onKeyDown={(e) => {
+                if (['e', 'E', '+', '-', '.'].includes(e.key)) {
+                  e.preventDefault();
+                }
+              }}
+              onChange={(e) => {
+                const cleaned = e.target.value.replace(/[^0-9]/g, '');
+                const parsed = parseInt(cleaned, 10);
+                const val = isNaN(parsed) ? 0 : Math.max(0, Math.min(task.moneyAllocated, parsed));
+                setActualMoneySpent(val);
+              }}
               required
               className="w-full p-3 bg-neutral-900 border border-neutral-700 rounded-xl text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
             />
@@ -148,7 +180,7 @@ const TaskProofSubmissionModal: React.FC<TaskProofSubmissionModalProps> = ({
               <span>Max allowed: ₹{task.moneyAllocated.toLocaleString()}</span>
               {task.moneyAllocated > actualMoneySpent && (
                 <span className="text-cyan-400 font-semibold">
-                  Taxpayer Savings: ₹{(task.moneyAllocated - actualMoneySpent).toLocaleString()} (Refunded to state)
+                  Unused Budget: ₹{(task.moneyAllocated - actualMoneySpent).toLocaleString()} (Returned to pool)
                 </span>
               )}
             </div>

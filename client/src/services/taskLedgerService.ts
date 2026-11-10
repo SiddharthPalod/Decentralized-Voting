@@ -1,3 +1,25 @@
+/**
+ * TrueLedger Verifiable Task & Budget Ledger Architecture
+ *
+ * Implements SOLID Principles & Clean Design Patterns:
+ * - Single Responsibility Principle (SRP): Dedicated classes for Storage, Tasks, Budgets, Identity, and Event Bus.
+ * - Open/Closed Principle (OCP): Storage backends and Lifecycle Guards can be extended without modifying core logic.
+ * - Liskov Substitution Principle (LSP): Storage and Repositories adhere to strict interface contracts.
+ * - Interface Segregation Principle (ISP): Focused interfaces (ITaskReader, ITaskWriter, IBudgetRepository, etc.).
+ * - Dependency Inversion Principle (DIP): High-level Facade depends on abstractions injected via constructor.
+ *
+ * Design Patterns Applied:
+ * - Repository Pattern: TaskRepository and BudgetRepository isolate data access from business rules.
+ * - Facade Pattern: TaskLedgerService provides a unified, backward-compatible API to all frontend consumers.
+ * - Observer Pattern: LedgerEventBus coordinates reactive subscriptions across React components and multi-tab storage.
+ * - Strategy Pattern: IStorageProvider abstracts underlying persistence mechanism (LocalStorageProvider).
+ * - State Machine / Guard Pattern: TaskLifecycleGuard validates and protects task status transitions.
+ */
+
+// ============================================================================
+// Domain Models
+// ============================================================================
+
 export interface LedgerTask {
   id: number;
   content: string;
@@ -8,8 +30,11 @@ export interface LedgerTask {
   proofDocumentName?: string;
   proofDocumentUrl?: string;
   completionNotes?: string;
-  status: 'Pending' | 'Ongoing' | 'Completed' | 'Approved';
+  auditFeedback?: string; // Regulator feedback if audit is denied / revisions required
+  auditRejectedAt?: number;
+  status: 'Proposed' | 'Pending' | 'Ongoing' | 'Completed' | 'Approved';
   isProposal?: boolean; // Bottom-up taskholder proposal
+  proposalStatus?: 'Pending_Review' | 'Approved' | 'Rejected';
   regulatorAddress: string;
   regulatorName: string;
   taskholderAddress: string; // specific address or 'ALL' for broadcast
@@ -29,55 +54,21 @@ export interface DepartmentBudget {
   committedFunds: number;
 }
 
+// ============================================================================
+// Initial Mock Seeding
+// ============================================================================
+
 const STORAGE_KEY = 'trueledger_tasks_v3';
 const BUDGET_STORAGE_KEY = 'trueledger_budgets_v3';
-
-// Set VITE_USE_MOCK_LEDGER=true in .env to seed demo data; production always starts empty.
 const USE_MOCK = import.meta.env.VITE_USE_MOCK_LEDGER === 'true';
 
 export const MACRO_BUDGETS: DepartmentBudget[] = [
-  {
-    sector: 'Healthcare',
-    percentage: 12,
-    totalBudget: 200000,
-    disbursedFunds: 45000,
-    committedFunds: 0,
-  },
-  {
-    sector: 'Infrastructure',
-    percentage: 24,
-    totalBudget: 400000,
-    disbursedFunds: 0,
-    committedFunds: 85000,
-  },
-  {
-    sector: 'Education',
-    percentage: 15,
-    totalBudget: 250000,
-    disbursedFunds: 0,
-    committedFunds: 32000,
-  },
-  {
-    sector: 'Agriculture',
-    percentage: 12,
-    totalBudget: 200000,
-    disbursedFunds: 0,
-    committedFunds: 0,
-  },
-  {
-    sector: 'Technology',
-    percentage: 9,
-    totalBudget: 150000,
-    disbursedFunds: 0,
-    committedFunds: 0,
-  },
-  {
-    sector: 'Contingency & Reserves',
-    percentage: 28,
-    totalBudget: 466667,
-    disbursedFunds: 0,
-    committedFunds: 0,
-  },
+  { sector: 'Healthcare', percentage: 12, totalBudget: 200000, disbursedFunds: 45000, committedFunds: 0 },
+  { sector: 'Infrastructure', percentage: 24, totalBudget: 400000, disbursedFunds: 0, committedFunds: 85000 },
+  { sector: 'Education', percentage: 15, totalBudget: 250000, disbursedFunds: 0, committedFunds: 32000 },
+  { sector: 'Agriculture', percentage: 12, totalBudget: 200000, disbursedFunds: 0, committedFunds: 0 },
+  { sector: 'Technology', percentage: 9, totalBudget: 150000, disbursedFunds: 0, committedFunds: 0 },
+  { sector: 'Contingency & Reserves', percentage: 28, totalBudget: 466667, disbursedFunds: 0, committedFunds: 0 },
 ];
 
 const INITIAL_TASKS: LedgerTask[] = [
@@ -144,45 +135,217 @@ const INITIAL_TASKS: LedgerTask[] = [
   },
 ];
 
-class TaskLedgerService {
-  private getStorage(): LedgerTask[] {
+// ============================================================================
+// Core Abstractions & Interfaces (ISP & DIP)
+// ============================================================================
+
+export interface IStorageProvider {
+  getItem<T>(key: string, fallback: T): T;
+  setItem<T>(key: string, value: T): void;
+}
+
+export interface IEventBus {
+  emit(event: string): void;
+  subscribe(event: string, callback: () => void): () => void;
+}
+
+export interface IPseudonymGenerator {
+  generate(sector: string, address: string): string;
+}
+
+export interface ITaskStateGuard {
+  canTransition(current: LedgerTask['status'], next: LedgerTask['status']): boolean;
+}
+
+export interface ITaskReader {
+  getAll(): LedgerTask[];
+  getById(id: number): LedgerTask | undefined;
+  getBySector(sector: string): LedgerTask[];
+  getForTaskholder(address?: string): LedgerTask[];
+  getPendingNotifications(address?: string): LedgerTask[];
+  getPendingProposals(): LedgerTask[];
+}
+
+export interface ITaskWriter {
+  save(tasks: LedgerTask[]): void;
+  upsert(task: LedgerTask): void;
+  delete(id: number): LedgerTask | undefined;
+}
+
+export interface ITaskRepository extends ITaskReader, ITaskWriter {}
+
+export interface IBudgetRepository {
+  getAll(): DepartmentBudget[];
+  getBySector(sector: string): DepartmentBudget;
+  updateDelta(sector: string, committedDelta: number, disbursedDelta: number): void;
+}
+
+// ============================================================================
+// Concrete Implementations (SRP)
+// ============================================================================
+
+/** Strategy Pattern: LocalStorage Provider */
+export class LocalStorageProvider implements IStorageProvider {
+  getItem<T>(key: string, fallback: T): T {
     try {
-      const data = localStorage.getItem(STORAGE_KEY);
+      const data = localStorage.getItem(key);
       if (!data) {
-        // Only seed demo tasks when the mock flag is explicitly enabled
-        const seed = USE_MOCK ? INITIAL_TASKS : [];
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(seed));
-        return seed;
+        localStorage.setItem(key, JSON.stringify(fallback));
+        return fallback;
       }
       return JSON.parse(data);
     } catch {
-      return USE_MOCK ? INITIAL_TASKS : [];
+      return fallback;
     }
   }
 
-  private setStorage(tasks: LedgerTask[]) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
-    window.dispatchEvent(new Event('trueledger_sync'));
-  }
-
-  // --- Department Budgets (Synchronized Across Regulators) ---
-  getAllBudgets(): DepartmentBudget[] {
+  setItem<T>(key: string, value: T): void {
     try {
-      const data = localStorage.getItem(BUDGET_STORAGE_KEY);
-      if (!data) {
-        // Only seed macro budgets in mock/demo mode; in production these come from on-chain allocations
-        const seed = USE_MOCK ? MACRO_BUDGETS : [];
-        localStorage.setItem(BUDGET_STORAGE_KEY, JSON.stringify(seed));
-        return seed;
-      }
-      return JSON.parse(data);
-    } catch {
-      return USE_MOCK ? MACRO_BUDGETS : [];
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (e) {
+      console.warn('Storage setItem failed:', e);
     }
   }
+}
 
-  getDepartmentBudget(sectorName: string): DepartmentBudget {
-    const budgets = this.getAllBudgets();
+/** Observer Pattern: Ledger Event Bus */
+export class LedgerEventBus implements IEventBus {
+  emit(event: string): void {
+    window.dispatchEvent(new Event(event));
+  }
+
+  subscribe(event: string, callback: () => void): () => void {
+    const handler = () => callback();
+    window.addEventListener(event, handler);
+    window.addEventListener('storage', handler);
+    return () => {
+      window.removeEventListener(event, handler);
+      window.removeEventListener('storage', handler);
+    };
+  }
+}
+
+/** Single Responsibility: Pseudonym Generator */
+export class PseudonymGenerator implements IPseudonymGenerator {
+  generate(sector: string, address: string): string {
+    const code = sector ? sector.slice(0, 3).toUpperCase() : 'GEN';
+    const suffix = address ? address.slice(-4).toUpperCase() : Math.floor(100 + Math.random() * 900).toString();
+    return `Node-${code}-${suffix}`;
+  }
+}
+
+/** State Machine / Guard Pattern: Task Lifecycle Validator */
+export class TaskLifecycleGuard implements ITaskStateGuard {
+  private validTransitions: Record<LedgerTask['status'], LedgerTask['status'][]> = {
+    Proposed: ['Pending'], // Approved by Regulator -> Broadcasted
+    Pending: ['Ongoing'],  // Accepted by Taskholder
+    Ongoing: ['Completed', 'Ongoing'], // Proof submitted or re-revised
+    Completed: ['Approved', 'Ongoing'], // Approved by Auditor OR Denied (returned to Ongoing for revision)
+    Approved: [], // Terminal immutable state
+  };
+
+  canTransition(current: LedgerTask['status'], next: LedgerTask['status']): boolean {
+    if (current === next) return true;
+    const allowed = this.validTransitions[current];
+    return allowed ? allowed.includes(next) : false;
+  }
+}
+
+/** Repository Pattern: Task Persistence & Filtering */
+export class TaskRepository implements ITaskRepository {
+  constructor(
+    private storage: IStorageProvider,
+    private eventBus: IEventBus
+  ) {}
+
+  getAll(): LedgerTask[] {
+    const seed = USE_MOCK ? INITIAL_TASKS : [];
+    return this.storage.getItem<LedgerTask[]>(STORAGE_KEY, seed);
+  }
+
+  getById(id: number): LedgerTask | undefined {
+    return this.getAll().find((t) => t.id === id);
+  }
+
+  getBySector(sector: string): LedgerTask[] {
+    const all = this.getAll();
+    if (!sector || sector === 'ALL') return all;
+    return all.filter((t) => t.sector.toLowerCase() === sector.toLowerCase());
+  }
+
+  getForTaskholder(address?: string): LedgerTask[] {
+    const all = this.getAll();
+    if (!address) return all;
+    const lower = address.toLowerCase();
+    return all.filter(
+      (t) =>
+        t.taskholderAddress === 'ALL' ||
+        t.taskholderAddress.toLowerCase() === lower ||
+        t.status === 'Ongoing' ||
+        t.status === 'Completed' ||
+        t.status === 'Approved'
+    );
+  }
+
+  getPendingNotifications(address?: string): LedgerTask[] {
+    const all = this.getAll();
+    if (!address) return all.filter((t) => t.status === 'Pending');
+    const lower = address.toLowerCase();
+    return all.filter(
+      (t) =>
+        t.status === 'Pending' &&
+        (t.taskholderAddress === 'ALL' || t.taskholderAddress.toLowerCase() === lower)
+    );
+  }
+
+  getPendingProposals(): LedgerTask[] {
+    return this.getAll().filter(
+      (t) => t.status === 'Proposed' && t.proposalStatus === 'Pending_Review'
+    );
+  }
+
+  save(tasks: LedgerTask[]): void {
+    this.storage.setItem(STORAGE_KEY, tasks);
+    this.eventBus.emit('trueledger_sync');
+  }
+
+  upsert(task: LedgerTask): void {
+    const tasks = this.getAll();
+    const idx = tasks.findIndex((t) => t.id === task.id);
+    if (idx !== -1) {
+      tasks[idx] = task;
+    } else {
+      tasks.unshift(task);
+    }
+    this.save(tasks);
+  }
+
+  delete(id: number): LedgerTask | undefined {
+    const tasks = this.getAll();
+    const idx = tasks.findIndex((t) => t.id === id);
+    if (idx !== -1) {
+      const [removed] = tasks.splice(idx, 1);
+      this.save(tasks);
+      return removed;
+    }
+    return undefined;
+  }
+}
+
+/** Repository Pattern: Budget Management */
+export class BudgetRepository implements IBudgetRepository {
+  constructor(
+    private storage: IStorageProvider,
+    private eventBus: IEventBus
+  ) {}
+
+  getAll(): DepartmentBudget[] {
+    const seed = USE_MOCK ? MACRO_BUDGETS : [];
+    return this.storage.getItem<DepartmentBudget[]>(BUDGET_STORAGE_KEY, seed);
+  }
+
+  getBySector(sectorName: string): DepartmentBudget {
+    const budgets = this.getAll();
     const found = budgets.find(
       (b) => b.sector.toLowerCase() === sectorName.toLowerCase()
     );
@@ -197,12 +360,8 @@ class TaskLedgerService {
     );
   }
 
-  private updateDepartmentBudget(
-    sectorName: string,
-    committedDelta: number,
-    disbursedDelta: number
-  ) {
-    const budgets = this.getAllBudgets();
+  updateDelta(sectorName: string, committedDelta: number, disbursedDelta: number): void {
+    const budgets = this.getAll();
     const idx = budgets.findIndex(
       (b) => b.sector.toLowerCase() === sectorName.toLowerCase()
     );
@@ -215,55 +374,63 @@ class TaskLedgerService {
         0,
         budgets[idx].disbursedFunds + disbursedDelta
       );
-      localStorage.setItem(BUDGET_STORAGE_KEY, JSON.stringify(budgets));
-      window.dispatchEvent(new Event('trueledger_sync'));
+      this.storage.setItem(BUDGET_STORAGE_KEY, budgets);
+      this.eventBus.emit('trueledger_sync');
     }
   }
+}
 
-  // --- Task Queries ---
+// ============================================================================
+// Facade Pattern: TaskLedgerService
+// ============================================================================
+
+export class TaskLedgerService {
+  constructor(
+    private taskRepo: ITaskRepository,
+    private budgetRepo: IBudgetRepository,
+    private eventBus: IEventBus,
+    private pseudonymGen: IPseudonymGenerator,
+    private stateGuard: ITaskStateGuard
+  ) {}
+
+  // --- Subscriptions (Observer) ---
+  subscribe(callback: () => void): () => void {
+    return this.eventBus.subscribe('trueledger_sync', callback);
+  }
+
+  // --- Budget Queries & Operations ---
+  getAllBudgets(): DepartmentBudget[] {
+    return this.budgetRepo.getAll();
+  }
+
+  getDepartmentBudget(sectorName: string): DepartmentBudget {
+    return this.budgetRepo.getBySector(sectorName);
+  }
+
+  // --- Task Queries (Read Operations) ---
   getAllTasks(): LedgerTask[] {
-    return this.getStorage();
+    return this.taskRepo.getAll();
   }
 
   getTasksBySector(sector: string): LedgerTask[] {
-    const all = this.getStorage();
-    if (!sector || sector === 'ALL') return all;
-    return all.filter((t) => t.sector.toLowerCase() === sector.toLowerCase());
+    return this.taskRepo.getBySector(sector);
   }
 
   getTasksForTaskholder(address?: string): LedgerTask[] {
-    const all = this.getStorage();
-    if (!address) return all;
-    const lower = address.toLowerCase();
-    return all.filter(
-      (t) =>
-        t.taskholderAddress === 'ALL' ||
-        t.taskholderAddress.toLowerCase() === lower ||
-        t.status === 'Ongoing' ||
-        t.status === 'Completed' ||
-        t.status === 'Approved'
-    );
+    return this.taskRepo.getForTaskholder(address);
   }
 
   getPendingNotifications(address?: string): LedgerTask[] {
-    const all = this.getStorage();
-    if (!address) return all.filter((t) => t.status === 'Pending');
-    const lower = address.toLowerCase();
-    return all.filter(
-      (t) =>
-        t.status === 'Pending' &&
-        (t.taskholderAddress === 'ALL' || t.taskholderAddress.toLowerCase() === lower)
-    );
+    return this.taskRepo.getPendingNotifications(address);
   }
 
-  // Generate pseudonymous node identifier
-  private generatePseudonym(sector: string, address: string): string {
-    const code = sector.slice(0, 3).toUpperCase();
-    const suffix = address ? address.slice(-4).toUpperCase() : Math.floor(100 + Math.random() * 900).toString();
-    return `Node-${code}-${suffix}`;
+  getPendingProposals(): LedgerTask[] {
+    return this.taskRepo.getPendingProposals();
   }
 
-  // --- Task Mutations ---
+  // --- Task Mutations (Create, Update, Delete) ---
+
+  /** C: Regulator assigns and broadcasts official task */
   assignTask(params: {
     content: string;
     sector: string;
@@ -273,7 +440,6 @@ class TaskLedgerService {
     taskholderAddress: string;
     txHash?: string;
   }): LedgerTask {
-    const tasks = this.getStorage();
     const newTask: LedgerTask = {
       id: Date.now(),
       content: params.content,
@@ -286,16 +452,13 @@ class TaskLedgerService {
       txHash: params.txHash,
       createdAt: Date.now(),
     };
-    tasks.unshift(newTask);
-    this.setStorage(tasks);
 
-    // Commit funds in the synchronized department budget
-    this.updateDepartmentBudget(newTask.sector, newTask.moneyAllocated, 0);
-
+    this.taskRepo.upsert(newTask);
+    this.budgetRepo.updateDelta(newTask.sector, newTask.moneyAllocated, 0);
     return newTask;
   }
 
-  // Bottom-up proposal by Taskholder
+  /** C: Taskholder proposes bottom-up community task (Pending Review) */
   proposeTask(params: {
     content: string;
     sector: string;
@@ -303,61 +466,106 @@ class TaskLedgerService {
     taskholderAddress: string;
     taskholderName: string;
   }): LedgerTask {
-    const tasks = this.getStorage();
     const newTask: LedgerTask = {
       id: Date.now(),
       content: params.content,
       sector: params.sector || 'Healthcare',
       moneyAllocated: params.estimatedBudget,
-      status: 'Pending',
+      status: 'Proposed',
       isProposal: true,
+      proposalStatus: 'Pending_Review',
       regulatorAddress: 'Pending Review',
       regulatorName: 'Department Regulators',
       taskholderAddress: params.taskholderAddress,
       taskholderName: params.taskholderName,
-      taskholderPseudonym: this.generatePseudonym(params.sector, params.taskholderAddress),
+      taskholderPseudonym: this.pseudonymGen.generate(params.sector, params.taskholderAddress),
       createdAt: Date.now(),
     };
-    tasks.unshift(newTask);
-    this.setStorage(tasks);
+
+    this.taskRepo.upsert(newTask);
     return newTask;
   }
 
-  acceptTask(taskId: number, taskholderAddress: string, taskholderName: string) {
-    const tasks = this.getStorage();
-    const idx = tasks.findIndex((t) => t.id === taskId);
-    if (idx !== -1) {
-      tasks[idx].status = 'Ongoing';
-      tasks[idx].taskholderAddress = taskholderAddress;
-      tasks[idx].taskholderName = taskholderName;
-      tasks[idx].taskholderPseudonym = this.generatePseudonym(tasks[idx].sector, taskholderAddress);
-      this.setStorage(tasks);
+  /** U: Regulator approves bottom-up proposal on-chain and broadcasts to department */
+  approveProposal(params: {
+    taskId: number;
+    regulatorAddress: string;
+    regulatorName: string;
+    txHash?: string;
+  }): LedgerTask | null {
+    const task = this.taskRepo.getById(params.taskId);
+    if (!task) return null;
+
+    if (!this.stateGuard.canTransition(task.status, 'Pending')) {
+      console.warn(`Invalid transition from ${task.status} to Pending`);
+      return null;
     }
+
+    task.status = 'Pending';
+    task.proposalStatus = 'Approved';
+    task.regulatorAddress = params.regulatorAddress;
+    task.regulatorName = params.regulatorName;
+    task.taskholderAddress = 'ALL';
+    if (params.txHash) task.txHash = params.txHash;
+
+    this.taskRepo.upsert(task);
+    this.budgetRepo.updateDelta(task.sector, task.moneyAllocated, 0);
+    return task;
   }
 
-  declineTask(taskId: number) {
-    const tasks = this.getStorage();
-    const target = tasks.find((t) => t.id === taskId);
-    if (target && target.status === 'Pending') {
-      this.updateDepartmentBudget(target.sector, -target.moneyAllocated, 0);
-    }
-    const updated = tasks.filter((t) => t.id !== taskId);
-    this.setStorage(updated);
+  /** D: Regulator rejects bottom-up proposal */
+  rejectProposal(taskId: number): boolean {
+    const removed = this.taskRepo.delete(taskId);
+    return !!removed;
   }
 
-  updateTaskStatus(taskId: number, newStatus: 'Pending' | 'Ongoing' | 'Completed') {
-    const tasks = this.getStorage();
-    const idx = tasks.findIndex((t) => t.id === taskId);
-    if (idx !== -1) {
-      tasks[idx].status = newStatus;
-      if (newStatus === 'Completed') {
-        tasks[idx].completedAt = Date.now();
-      }
-      this.setStorage(tasks);
+  /** U: Taskholder accepts broadcasted task */
+  acceptTask(taskId: number, taskholderAddress: string, taskholderName: string): boolean {
+    const task = this.taskRepo.getById(taskId);
+    if (!task) return false;
+
+    if (!this.stateGuard.canTransition(task.status, 'Ongoing')) {
+      console.warn(`Invalid transition from ${task.status} to Ongoing`);
+      return false;
     }
+
+    task.status = 'Ongoing';
+    task.taskholderAddress = taskholderAddress;
+    task.taskholderName = taskholderName;
+    task.taskholderPseudonym = this.pseudonymGen.generate(task.sector, taskholderAddress);
+
+    this.taskRepo.upsert(task);
+    return true;
   }
 
-  // Taskholder submits completion proof with document and actual money spent
+  /** D: Decline notification */
+  declineTask(taskId: number): void {
+    const task = this.taskRepo.getById(taskId);
+    if (task && task.status === 'Pending') {
+      this.budgetRepo.updateDelta(task.sector, -task.moneyAllocated, 0);
+    }
+    this.taskRepo.delete(taskId);
+  }
+
+  /** U: Update task status */
+  updateTaskStatus(taskId: number, newStatus: 'Pending' | 'Ongoing' | 'Completed'): boolean {
+    const task = this.taskRepo.getById(taskId);
+    if (!task) return false;
+
+    if (!this.stateGuard.canTransition(task.status, newStatus)) {
+      console.warn(`Invalid transition from ${task.status} to ${newStatus}`);
+      return false;
+    }
+
+    task.status = newStatus;
+    if (newStatus === 'Completed') {
+      task.completedAt = Date.now();
+    }
+    this.taskRepo.upsert(task);
+    return true;
+  }
+
+  /** U: Taskholder submits completion proof with expense receipts & IPFS document */
   submitTaskProof(params: {
     taskId: number;
     actualMoneySpent: number;
@@ -365,54 +573,68 @@ class TaskLedgerService {
     proofDocumentCid?: string;
     proofDocumentUrl?: string;
     completionNotes: string;
-  }) {
-    const tasks = this.getStorage();
-    const idx = tasks.findIndex((t) => t.id === params.taskId);
-    if (idx !== -1) {
-      tasks[idx].status = 'Completed';
-      tasks[idx].actualMoneySpent = params.actualMoneySpent;
-      tasks[idx].proofDocumentName = params.proofDocumentName;
-      tasks[idx].proofDocumentCid = params.proofDocumentCid || `ipfs://bafybei${Math.random().toString(36).substring(2, 15)}`;
-      if (params.proofDocumentUrl) {
-        tasks[idx].proofDocumentUrl = params.proofDocumentUrl;
-      }
-      tasks[idx].completionNotes = params.completionNotes;
-      tasks[idx].completedAt = Date.now();
-      this.setStorage(tasks);
+  }): boolean {
+    const task = this.taskRepo.getById(params.taskId);
+    if (!task) return false;
+
+    task.status = 'Completed';
+    task.actualMoneySpent = params.actualMoneySpent;
+    task.proofDocumentName = params.proofDocumentName;
+    task.proofDocumentCid = params.proofDocumentCid || `ipfs://bafybei${Math.random().toString(36).substring(2, 15)}`;
+    if (params.proofDocumentUrl) {
+      task.proofDocumentUrl = params.proofDocumentUrl;
     }
+    task.completionNotes = params.completionNotes;
+    task.auditFeedback = undefined; // Clear revision feedback upon new proof resubmission
+    task.completedAt = Date.now();
+
+    this.taskRepo.upsert(task);
+    return true;
   }
 
-  deleteTask(taskId: number) {
-    const tasks = this.getStorage();
-    const target = tasks.find((t) => t.id === taskId);
-    if (target && target.status === 'Pending') {
-      this.updateDepartmentBudget(target.sector, -target.moneyAllocated, 0);
+  /** D: Delete task and release committed department funds */
+  deleteTask(taskId: number): boolean {
+    const task = this.taskRepo.getById(taskId);
+    if (task && task.status === 'Pending') {
+      this.budgetRepo.updateDelta(task.sector, -task.moneyAllocated, 0);
     }
-    const updated = tasks.filter((t) => t.id !== taskId);
-    this.setStorage(updated);
+    return !!this.taskRepo.delete(taskId);
   }
 
-  // Regulator approves audit and releases verified funds
-  approveAndReleaseFunds(taskId: number, verifiedAmount?: number) {
-    const tasks = this.getStorage();
-    const idx = tasks.findIndex((t) => t.id === taskId);
-    if (idx !== -1) {
-      const task = tasks[idx];
-      const finalDisbursed = verifiedAmount !== undefined ? verifiedAmount : (task.actualMoneySpent || task.moneyAllocated);
-      
-      // Update department funds: remove commitment, record actual disbursed
-      this.updateDepartmentBudget(task.sector, -task.moneyAllocated, finalDisbursed);
+  /** U: Regulator denies audit and requests revision with specific feedback */
+  rejectTaskAudit(taskId: number, feedback: string): boolean {
+    const task = this.taskRepo.getById(taskId);
+    if (!task) return false;
 
-      tasks[idx].status = 'Approved';
-      tasks[idx].actualMoneySpent = finalDisbursed;
-      tasks[idx].approvedAt = Date.now();
-      this.setStorage(tasks);
-    }
+    task.status = 'Ongoing'; // Returned to active list for revision
+    task.auditFeedback = feedback;
+    task.auditRejectedAt = Date.now();
+
+    this.taskRepo.upsert(task);
+    return true;
   }
 
-  // Taskholder returns unspent surplus funds back to the department pool
+  /** U: Regulator approves audit and releases verified public funds */
+  approveAndReleaseFunds(taskId: number, verifiedAmount?: number): boolean {
+    const task = this.taskRepo.getById(taskId);
+    if (!task) return false;
+
+    const finalDisbursed = verifiedAmount !== undefined ? verifiedAmount : (task.actualMoneySpent || task.moneyAllocated);
+
+    // Commit funds transition: release committed, commit actual disbursed
+    this.budgetRepo.updateDelta(task.sector, -task.moneyAllocated, finalDisbursed);
+
+    task.status = 'Approved';
+    task.actualMoneySpent = finalDisbursed;
+    task.approvedAt = Date.now();
+
+    this.taskRepo.upsert(task);
+    return true;
+  }
+
+  /** U: Taskholder returns unspent surplus balance back to department treasury */
   returnSurplusToDepartment(sector?: string, amount?: number): number {
-    const tasks = this.getStorage();
+    const tasks = this.taskRepo.getAll();
     let refundedTotal = 0;
 
     for (const t of tasks) {
@@ -422,35 +644,40 @@ class TaskLedgerService {
         t.moneyAllocated > t.actualMoneySpent
       ) {
         const surplus = t.moneyAllocated - t.actualMoneySpent;
-        t.moneyAllocated = t.actualMoneySpent; // Align allocated with actual spent!
+        t.moneyAllocated = t.actualMoneySpent;
         refundedTotal += surplus;
-        // Release from department committed funds so unspent funds become available in the pool
-        this.updateDepartmentBudget(t.sector, -surplus, 0);
+        this.budgetRepo.updateDelta(t.sector, -surplus, 0);
       }
     }
 
-    // If tasks had not yet aligned but an amount was specified
     if (refundedTotal === 0 && amount && amount > 0) {
       refundedTotal = amount;
       if (sector) {
-        this.updateDepartmentBudget(sector, -amount, 0);
+        this.budgetRepo.updateDelta(sector, -amount, 0);
       }
     }
 
-    this.setStorage(tasks);
-    window.dispatchEvent(new Event('trueledger_sync'));
+    this.taskRepo.save(tasks);
     return refundedTotal;
-  }
-
-  subscribe(callback: () => void): () => void {
-    const handler = () => callback();
-    window.addEventListener('trueledger_sync', handler);
-    window.addEventListener('storage', handler);
-    return () => {
-      window.removeEventListener('trueledger_sync', handler);
-      window.removeEventListener('storage', handler);
-    };
   }
 }
 
-export const taskLedger = new TaskLedgerService();
+// ============================================================================
+// Dependency Inversion: Assembling the Facade Instance (DIP)
+// ============================================================================
+
+const defaultStorageProvider = new LocalStorageProvider();
+const defaultEventBus = new LedgerEventBus();
+const defaultPseudonymGen = new PseudonymGenerator();
+const defaultStateGuard = new TaskLifecycleGuard();
+
+const defaultTaskRepo = new TaskRepository(defaultStorageProvider, defaultEventBus);
+const defaultBudgetRepo = new BudgetRepository(defaultStorageProvider, defaultEventBus);
+
+export const taskLedger = new TaskLedgerService(
+  defaultTaskRepo,
+  defaultBudgetRepo,
+  defaultEventBus,
+  defaultPseudonymGen,
+  defaultStateGuard
+);

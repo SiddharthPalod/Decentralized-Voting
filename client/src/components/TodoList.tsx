@@ -3,6 +3,7 @@ import { useWallet } from '@aptos-labs/wallet-adapter-react';
 import { taskLedger, LedgerTask } from '../services/taskLedgerService';
 import TodoItem from './TodoItem';
 import TaskProofSubmissionModal from './TaskProofSubmissionModal';
+import ProofDocViewerModal from './ProofDocViewerModal';
 
 interface TodoListProps {
   onTasksLoaded?: (tasks: LedgerTask[]) => void;
@@ -19,16 +20,22 @@ const TodoList: React.FC<TodoListProps> = ({
   const [selectedTaskForProof, setSelectedTaskForProof] = useState<LedgerTask | null>(null);
   const [isProofModalOpen, setIsProofModalOpen] = useState(false);
 
+  // Selected task for proof doc viewer
+  const [selectedTaskForViewer, setSelectedTaskForViewer] = useState<LedgerTask | null>(null);
+  const [isViewerOpen, setIsViewerOpen] = useState(false);
+
   const fetchTasks = useCallback(() => {
     const all = taskLedger.getAllTasks();
     const userAddr = account?.address ? account.address.toString().toLowerCase() : '';
     const relevant = all.filter((t) => {
+      // Broadcast tasks in Pending status should only appear in the notification bell until accepted.
+      // Bottom-up tasks in Proposed status should wait for regulator review.
+      if (t.status === 'Pending' || t.status === 'Proposed') return false;
       if (!userAddr) return true;
-      if (!t.taskholderAddress) return true;
+      if (!t.taskholderAddress) return false;
       return (
         t.taskholderAddress.toLowerCase() === userAddr ||
-        t.regulatorAddress.toLowerCase() === userAddr ||
-        t.taskholderAddress === 'ALL'
+        t.regulatorAddress.toLowerCase() === userAddr
       );
     });
 
@@ -71,7 +78,7 @@ const TodoList: React.FC<TodoListProps> = ({
   };
 
   return (
-    <div className="p-5 min-h-96 min-w-fit text-white bg-[#141414]/95 border border-[#282828] shadow-2xl rounded-2xl backdrop-blur-xl">
+    <div className="w-full min-h-[340px] p-4 sm:p-5 text-white bg-[#141414]/95 border border-[#282828] shadow-2xl rounded-2xl backdrop-blur-xl">
       <div>
         <div className="flex items-center justify-between border-b border-[#282828] pb-3 mb-4">
           <h2 className="text-xl font-bold font-headline text-white">
@@ -83,8 +90,8 @@ const TodoList: React.FC<TodoListProps> = ({
         </div>
 
         {taskList.length === 0 ? (
-          <div className="py-12 text-center text-neutral-400 text-sm">
-            No active tasks. Accept an assigned task from the notifications bell or use the Task Request form on the left.
+          <div className="py-12 text-center text-neutral-400 text-sm max-w-md mx-auto leading-relaxed">
+            No active task assignments yet. Click the 🔔 notification bell above to review and accept incoming broadcasts, or propose a new field task.
           </div>
         ) : (
           <div className="space-y-2 max-h-[520px] overflow-y-auto pr-1">
@@ -95,6 +102,10 @@ const TodoList: React.FC<TodoListProps> = ({
                 deleteTask={deleteTask}
                 updateStatus={updateStatus}
                 onOpenProofModal={handleOpenProofModal}
+                onOpenDocViewer={(t) => {
+                  setSelectedTaskForViewer(t);
+                  setIsViewerOpen(true);
+                }}
               />
             ))}
           </div>
@@ -110,6 +121,16 @@ const TodoList: React.FC<TodoListProps> = ({
           setSelectedTaskForProof(null);
         }}
         onSubmitProof={handleSubmitProof}
+      />
+
+      {/* Proof Document Viewer Modal */}
+      <ProofDocViewerModal
+        task={selectedTaskForViewer}
+        isOpen={isViewerOpen}
+        onClose={() => {
+          setIsViewerOpen(false);
+          setSelectedTaskForViewer(null);
+        }}
       />
     </div>
   );

@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useWallet } from '@aptos-labs/wallet-adapter-react';
-import { Wallet, Check, Copy, ExternalLink, LogOut, ChevronDown, X, Loader2 } from 'lucide-react';
+import { Wallet, Check, Copy, ExternalLink, LogOut, ChevronDown, X, Loader2, Coins } from 'lucide-react';
+import { aptos } from '../lib/aptosClient';
 
 interface WalletOption {
   name: string;
@@ -16,6 +17,44 @@ export const WalletSelector: React.FC = () => {
   const [connecting, setConnecting] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [aptBalance, setAptBalance] = useState<string | null>(null);
+  const [isFunding, setIsFunding] = useState(false);
+
+  const fetchBalance = useCallback(async () => {
+    if (!account?.address) return;
+    try {
+      const amount = await aptos.getAccountAPTAmount({
+        accountAddress: account.address.toString(),
+      });
+      setAptBalance((amount / 100_000_000).toFixed(4));
+    } catch {
+      setAptBalance(null);
+    }
+  }, [account]);
+
+  useEffect(() => {
+    if (connected && isAccountOpen) {
+      fetchBalance();
+    }
+  }, [connected, isAccountOpen, fetchBalance]);
+
+  const handleRequestFaucet = async () => {
+    if (!account?.address) return;
+    setIsFunding(true);
+    try {
+      await aptos.fundAccount({
+        accountAddress: account.address.toString(),
+        amount: 100_000_000, // 1 APT
+      });
+      await fetchBalance();
+      alert('Successfully requested 1 APT from Devnet faucet!');
+    } catch (err: any) {
+      console.warn('Faucet request failed/rate-limited:', err);
+      window.open(`https://aptos.dev/network/faucet?address=${account.address.toString()}`, '_blank');
+    } finally {
+      setIsFunding(false);
+    }
+  };
 
   // Check if Petra is in window
   const isPetraInWindow = typeof window !== 'undefined' && !!(window as any).aptos;
@@ -108,11 +147,11 @@ export const WalletSelector: React.FC = () => {
       ) : (
         <button
           onClick={() => setIsAccountOpen((prev) => !prev)}
-          className="flex items-center gap-2 px-3 py-1.5 bg-white/95 hover:bg-white text-gray-800 text-xs font-semibold rounded-xl border border-gray-200 shadow-sm transition"
+          className="flex items-center gap-2 px-3 py-1.5 bg-[#1c1c1c] hover:bg-[#242424] text-neutral-200 text-xs font-semibold rounded-xl border border-[#282828] shadow-sm transition"
         >
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          <span className="font-mono">{formatAddress(account?.address?.toString())}</span>
-          <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
+          <span className="font-mono text-neutral-200">{formatAddress(account?.address?.toString())}</span>
+          <ChevronDown className="w-3.5 h-3.5 text-neutral-400" />
         </button>
       )}
 
@@ -130,7 +169,7 @@ export const WalletSelector: React.FC = () => {
 
           <div className="bg-[#1A1D24] p-3 rounded-xl border border-[#272A33] mb-3">
             <p className="text-[11px] text-gray-400 font-medium mb-1">Wallet Address</p>
-            <div className="flex items-center justify-between gap-1">
+            <div className="flex items-center justify-between gap-1 mb-2.5">
               <span className="text-xs font-mono font-bold text-gray-100 truncate" title={account?.address?.toString()}>
                 {account?.address?.toString()}
               </span>
@@ -142,7 +181,38 @@ export const WalletSelector: React.FC = () => {
                 {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
               </button>
             </div>
+
+            <div className="pt-2 border-t border-[#272A33] flex items-center justify-between text-xs">
+              <span className="text-gray-400 font-medium flex items-center gap-1">
+                <Coins className="w-3.5 h-3.5 text-amber-400" /> Devnet APT:
+              </span>
+              <span className="font-mono font-bold text-emerald-400">
+                {aptBalance !== null ? `${aptBalance} APT` : 'Checking...'}
+              </span>
+            </div>
           </div>
+
+          {/* Ultra-low gas badge */}
+          <div className="p-2 bg-emerald-950/40 border border-emerald-800/50 rounded-xl mb-3 text-[10px] text-emerald-300 flex items-center justify-between">
+            <span>Tx Gas Cap:</span>
+            <span className="font-mono font-bold text-white">~0.004 APT (&lt; $0.04)</span>
+          </div>
+
+          {/* 1-Click Devnet Faucet Request */}
+          <button
+            type="button"
+            onClick={handleRequestFaucet}
+            disabled={isFunding}
+            className="w-full flex items-center justify-center gap-1.5 py-2 px-3 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 text-xs font-bold rounded-xl border border-emerald-500/40 transition mb-2.5 shadow-sm"
+          >
+            {isFunding ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Requesting 1 APT...
+              </>
+            ) : (
+              '🚰 Request 1 APT (Devnet Faucet)'
+            )}
+          </button>
 
           <button
             onClick={() => {
@@ -199,7 +269,7 @@ export const WalletSelector: React.FC = () => {
                     <img
                       src={wallet.icon}
                       alt={wallet.name}
-                      className="w-7 h-7 rounded-lg object-contain bg-white p-0.5 border border-[#272A33]"
+                      className="w-7 h-7 rounded-lg object-contain bg-neutral-800 p-0.5 border border-[#272A33]"
                       onError={(e) => {
                         (e.target as any).style.display = 'none';
                       }}

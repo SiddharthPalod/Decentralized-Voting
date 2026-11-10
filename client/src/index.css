@@ -8,6 +8,7 @@ html, body {
   margin: 0;
   padding: 0;
   font-family: 'Montserrat', sans-serif;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 section {
@@ -15,8 +16,159 @@ section {
   background-color: #000000;
   color: white;
   overflow-x: hidden;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* =========================================================================
+   Theme Background Images:
+   Dark Theme  -> bgimg.jpg
+   Light Theme -> bgimg_light.png
+   ========================================================================= */
+section,
+html.dark section,
+.app-page-bg {
+  background-image: url('/bgimg.jpg') !important;
+  background-size: cover !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-attachment: fixed;
+}
+
+html.light section,
+html.light .app-page-bg {
+  background-image: url('/bgimg_light.png') !important;
+  background-size: cover !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-attachment: fixed;
 }
 
 select::-ms-expand {
   display: none;
+}
+
+/* =========================================================================
+   Light Theme (Day Mode) Govt Portal Styling
+   ========================================================================= */
+html.light,
+html.light body {
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+html.light section {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+}
+
+html.light div.bg-black,
+html.light div.bg-\[\#0B0D11\] {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+}
+
+/* Cards & containers */
+html.light .bg-\[\#141414\]\/95,
+html.light .bg-\[\#141414\]\/90,
+html.light .bg-\[\#141414\] {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+  color: #0f172a !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.07), 0 8px 10px -6px rgba(0, 0, 0, 0.05) !important;
+}
+
+/* Inputs, sub-cards, nested surfaces */
+html.light .bg-\[\#1c1c1c\],
+html.light .bg-\[\#181818\],
+html.light .bg-\[\#171717\],
+html.light .bg-\[\#13151A\],
+html.light .bg-\[\#1A1D24\],
+html.light .bg-neutral-900,
+html.light .bg-neutral-900\/90,
+html.light .bg-neutral-900\/60,
+html.light .bg-neutral-800 {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+/* Hover states */
+html.light .hover\:bg-\[\#242424\]:hover,
+html.light .hover\:bg-\[\#1c1c1c\]\/50:hover,
+html.light .hover\:bg-neutral-900\/50:hover,
+html.light .hover\:bg-neutral-700:hover,
+html.light .hover\:bg-\[\#22252E\]:hover {
+  background-color: #e2e8f0 !important;
+}
+
+/* Borders */
+html.light .border-\[\#282828\],
+html.light .border-\[\#282828\]\/60,
+html.light .border-\[\#282828\]\/70,
+html.light .border-\[\#242424\],
+html.light .border-\[\#262626\],
+html.light .border-\[\#272A33\],
+html.light .border-neutral-800,
+html.light .border-neutral-700,
+html.light .border-neutral-600 {
+  border-color: #e2e8f0 !important;
+}
+
+html.light .divide-\[\#282828\]\/70 > * + *,
+html.light .divide-\[\#242424\] > * + * {
+  border-color: #e2e8f0 !important;
+}
+
+/* Typography in light mode */
+html.light .text-white,
+html.light .text-neutral-100,
+html.light .text-neutral-200,
+html.light .text-gray-100 {
+  color: #0f172a !important;
+}
+
+html.light .text-neutral-300,
+html.light .text-neutral-400,
+html.light .text-gray-400 {
+  color: #475569 !important;
+}
+
+html.light .text-neutral-500 {
+  color: #64748b !important;
+}
+
+/* Inputs, Textareas, Selects in light mode */
+html.light input:not([type="checkbox"]):not([type="radio"]),
+html.light select,
+html.light textarea {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+html.light input::placeholder,
+html.light textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+/* Select dropdown options */
+html.light select option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* Table headers & backgrounds */
+html.light thead {
+  background-color: #f1f5f9 !important;
+}
+
+html.light thead th {
+  color: #475569 !important;
+}
+
+/* Neutral button in light mode */
+html.light button.bg-neutral-800 {
+  background-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+html.light button.bg-neutral-800:hover {
+  background-color: #cbd5e1 !important;
 }

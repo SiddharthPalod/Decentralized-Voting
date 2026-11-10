@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+client/node_modules/
+
+# Aptos binaries and builds
+contracts/bin/
+contracts/build/
+contracts/.aptos/
+*.exe
+
+# Production builds
+client/dist/
+
+# Backup and temp files
+*.bak
+*.tmp
+.env.local
