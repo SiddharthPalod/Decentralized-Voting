@@ -9,6 +9,7 @@ module account_addr::user {
     /// =========================================================================
     const EUSER_NOT_FOUND: u64 = 1;
     const EUSER_ALREADY_EXISTS: u64 = 2;
+    const E_UNAUTHORIZED_DOMAIN: u64 = 11;
 
     /// =========================================================================
     /// Events (Observer Pattern)
@@ -51,6 +52,15 @@ module account_addr::user {
     #[view]
     public fun user_exists(account: address): bool {
         exists<User>(account)
+    }
+
+    #[view]
+    public fun is_authorized_for_domain(account: address, sector: String): bool acquires User {
+        if (!exists<User>(account)) {
+            return false
+        };
+        let user = borrow_global<User>(account);
+        user.field == sector || user.field == string::utf8(b"Universal") || user.field == string::utf8(b"Government")
     }
 
     /// =========================================================================

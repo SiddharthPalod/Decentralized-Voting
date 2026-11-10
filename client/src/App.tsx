@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import IntroPg from './pages/IntroPg';
 import ClientIntroPg from './pages/ClientIntroPg';
 import ServerIntroPg from './pages/ServerIntroPg';
+import GovtIntroPg from './pages/GovtIntroPg';
 import LeaderboardPg from './pages/LeaderboardPg';
 import ProtectedRoute from './components/ProtectedRoute';
 
@@ -24,6 +25,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <ServerIntroPg />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/govtpg"
+            element={
+              <ProtectedRoute>
+                <GovtIntroPg />
               </ProtectedRoute>
             }
           />

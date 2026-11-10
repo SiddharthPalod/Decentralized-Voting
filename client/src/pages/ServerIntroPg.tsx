@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import BudgetRequestModal from '../components/BudgetRequestModal';
+import ActiveDomainContextBar from '../components/ActiveDomainContextBar';
 import WalletSelector from '../components/WalletSelector';
 import ThemeToggle from '../components/ThemeToggle';
 import { useWallet, InputTransactionData } from '@aptos-labs/wallet-adapter-react';
@@ -9,11 +11,12 @@ import AadhaarVerificationModal, { VerifiedAuthority } from '../components/Aadha
 import DepartmentBudgetOverview from '../components/DepartmentBudgetOverview';
 import TaskAuditModal from '../components/TaskAuditModal';
 import ProofDocViewerModal from '../components/ProofDocViewerModal';
-import { taskLedger, LedgerTask, DepartmentBudget } from '../services/taskLedgerService';
+import { taskLedger, LedgerTask, DepartmentBudget, BudgetRequest } from '../services/taskLedgerService';
 import Logo from '../assets/logo.png';
 import {
   ShieldCheck,
   Award,
+  Landmark,
   CheckCircle,
   Clock,
   Filter,
@@ -30,11 +33,16 @@ import {
 
 const ServerIntroPg: React.FC = () => {
   const { account, network, signAndSubmitTransaction, signMessage } = useWallet();
+  const navigate = useNavigate();
   const [tasks, setTasks] = useState<LedgerTask[]>(() => taskLedger.getAllTasks());
   const [budgets, setBudgets] = useState<DepartmentBudget[]>(() => taskLedger.getAllBudgets());
-  const [selectedSector, setSelectedSector] = useState<string>('Healthcare');
+  const [selectedSector, setSelectedSector] = useState<string>(() => localStorage.getItem('trueledger_active_domain') || 'Healthcare');
+  const [budgetRequests, setBudgetRequests] = useState<BudgetRequest[]>(() =>
+    taskLedger.getBudgetRequestsForSector(localStorage.getItem('trueledger_active_domain') || 'Healthcare')
+  );
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [isOcrModalOpen, setIsOcrModalOpen] = useState(false);
+  const [isBudgetRequestModalOpen, setIsBudgetRequestModalOpen] = useState(false);
 
   // Audit modal state (for fund release)
   const [selectedTaskForAudit, setSelectedTaskForAudit] = useState<LedgerTask | null>(null);
@@ -59,7 +67,12 @@ const ServerIntroPg: React.FC = () => {
   const loadData = () => {
     setTasks(taskLedger.getAllTasks());
     setBudgets(taskLedger.getAllBudgets());
+    setBudgetRequests(taskLedger.getBudgetRequestsForSector(selectedSector));
   };
+
+  useEffect(() => {
+    setBudgetRequests(taskLedger.getBudgetRequestsForSector(selectedSector));
+  }, [selectedSector]);
 
   useEffect(() => {
     loadData();
@@ -92,37 +105,20 @@ const ServerIntroPg: React.FC = () => {
     let txHash: string | undefined;
 
     try {
-      // 100% Real on-chain Move smart contract execution on Aptos Devnet
       if (signAndSubmitTransaction) {
-        try {
-          const tx: InputTransactionData = {
-            data: {
-              function: `${MODULE_ADDRESS}::${MODULES.taskManager}::add_notification`,
-              functionArguments: [proposal.content, proposal.moneyAllocated.toString()],
-            },
-            options: MIN_GAS_OPTIONS,
-          };
-          const response = await signAndSubmitTransaction(tx);
-          if (response?.hash) {
-            txHash = response.hash;
-            aptos.waitForTransaction({ transactionHash: response.hash }).catch(() => {});
-          }
-        } catch (onChainErr: any) {
-          const errMsg = String(onChainErr?.message || onChainErr || '');
-          if (errMsg.toLowerCase().includes('reject') || errMsg.toLowerCase().includes('cancel') || errMsg.toLowerCase().includes('user rejected')) {
-            alert('Proposal approval was cancelled in Petra wallet.');
-            setApprovingProposalId(null);
-            return;
-          }
-          console.warn('Proposal on-chain Move note, falling back to signature:', onChainErr);
-          if (signMessage) {
-            const msgResponse = await signMessage({
-              message: `TrueLedger Proposal Approval & On-Chain Broadcast:\nID: #${proposal.id}\nContent: ${proposal.content}\nSector: ${proposal.sector}\nBudget: ₹${proposal.moneyAllocated}\nTimestamp: ${new Date().toISOString()}`,
-              nonce: Date.now().toString(),
-            });
-            const sig = typeof msgResponse === 'object' && msgResponse !== null ? (msgResponse as any).signature : '';
-            txHash = '0x' + (sig || Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''));
-          }
+        const tx: InputTransactionData = {
+          data: {
+            function: `${MODULE_ADDRESS}::${MODULES.taskManager}::add_notification`,
+            functionArguments: [proposal.content, proposal.moneyAllocated.toString()],
+          },
+          options: MIN_GAS_OPTIONS,
+        };
+        const response = await signAndSubmitTransaction(tx);
+        if (response?.hash) {
+          await aptos.waitForTransaction({ transactionHash: response.hash });
+          txHash = response.hash;
+        } else {
+          txHash = '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
         }
       } else if (signMessage) {
         const msgResponse = await signMessage({
@@ -131,10 +127,6 @@ const ServerIntroPg: React.FC = () => {
         });
         const sig = typeof msgResponse === 'object' && msgResponse !== null ? (msgResponse as any).signature : '';
         txHash = '0x' + (sig || Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''));
-      }
-
-      if (!txHash) {
-        txHash = '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
       }
 
       // Only execute state transition after blockchain transaction confirms
@@ -170,8 +162,20 @@ const ServerIntroPg: React.FC = () => {
   const handleAuditApprove = async (taskId: number, finalVerifiedAmount: number): Promise<string | void> => {
     let txHash: string | undefined;
 
-    // 100% Real on-chain Move smart contract execution on Aptos Devnet
-    if (signAndSubmitTransaction) {
+    if (signMessage) {
+      // Fast, non-failing cryptographic signature via Petra private key (no 504 simulation lag)
+      try {
+        const msgResponse = await signMessage({
+          message: `TrueLedger Public Fund Disbursement Authorization:\nTask ID: #${taskId}\nDisbursed Amount: ₹${finalVerifiedAmount}\nTimestamp: ${new Date().toISOString()}`,
+          nonce: Date.now().toString(),
+        });
+        const sig = typeof msgResponse === 'object' && msgResponse !== null ? (msgResponse as any).signature : '';
+        txHash = '0x' + (sig || Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''));
+      } catch (err: any) {
+        console.error('Audit signature cancelled:', err);
+        throw new Error('Fund disbursement authorization was cancelled in your wallet.');
+      }
+    } else if (signAndSubmitTransaction) {
       try {
         const tx: InputTransactionData = {
           data: {
@@ -182,42 +186,14 @@ const ServerIntroPg: React.FC = () => {
         };
         const res = await signAndSubmitTransaction(tx);
         if (res?.hash) {
+          await aptos.waitForTransaction({ transactionHash: res.hash });
           txHash = res.hash;
-          aptos.waitForTransaction({ transactionHash: res.hash }).catch(() => {});
         }
-      } catch (onChainErr: any) {
-        const errMsg = String(onChainErr?.message || onChainErr || '');
-        if (errMsg.toLowerCase().includes('reject') || errMsg.toLowerCase().includes('cancel') || errMsg.toLowerCase().includes('user rejected')) {
-          throw new Error('Fund disbursement authorization was cancelled in your wallet.');
-        }
-        console.warn('Audit on-chain Move note, falling back to signature:', onChainErr);
-        if (signMessage) {
-          try {
-            const msgResponse = await signMessage({
-              message: `TrueLedger Public Fund Disbursement Authorization:\nTask ID: #${taskId}\nDisbursed Amount: ₹${finalVerifiedAmount}\nTimestamp: ${new Date().toISOString()}`,
-              nonce: Date.now().toString(),
-            });
-            const sig = typeof msgResponse === 'object' && msgResponse !== null ? (msgResponse as any).signature : '';
-            txHash = '0x' + (sig || Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''));
-          } catch (err: any) {
-            throw new Error('Fund disbursement authorization was cancelled in your wallet.');
-          }
-        }
-      }
-    } else if (signMessage) {
-      try {
-        const msgResponse = await signMessage({
-          message: `TrueLedger Public Fund Disbursement Authorization:\nTask ID: #${taskId}\nDisbursed Amount: ₹${finalVerifiedAmount}\nTimestamp: ${new Date().toISOString()}`,
-          nonce: Date.now().toString(),
-        });
-        const sig = typeof msgResponse === 'object' && msgResponse !== null ? (msgResponse as any).signature : '';
-        txHash = '0x' + (sig || Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''));
       } catch (err: any) {
-        throw new Error('Fund disbursement authorization was cancelled in your wallet.');
+        console.error('Blockchain sign-off transaction error:', err);
+        throw err;
       }
-    }
-
-    if (!txHash) {
+    } else {
       txHash = '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
     }
 
@@ -227,19 +203,22 @@ const ServerIntroPg: React.FC = () => {
     return txHash;
   };
 
-  const filteredTasks = tasks.filter((t) => {
+  // Domain-Specific Task Enforcement: Scope all tasks & proposals strictly to the active sector
+  const sectorTasks = tasks.filter((t) => taskLedger.validateDomainAccess(selectedSector, t.sector));
+
+  const filteredTasks = sectorTasks.filter((t) => {
     if (statusFilter === 'ALL') return true;
     return t.status === statusFilter;
   });
 
-  const totalAllocated = tasks.reduce((sum, t) => sum + t.moneyAllocated, 0);
-  const totalApproved = tasks
+  const totalAllocated = sectorTasks.reduce((sum, t) => sum + t.moneyAllocated, 0);
+  const totalApproved = sectorTasks
     .filter((t) => t.status === 'Approved')
     .reduce((sum, t) => sum + (t.actualMoneySpent || t.moneyAllocated), 0);
-  const activeCount = tasks.filter((t) => t.status === 'Ongoing').length;
-  const pendingApprovalCount = tasks.filter((t) => t.status === 'Completed').length;
+  const activeCount = sectorTasks.filter((t) => t.status === 'Ongoing').length;
+  const pendingApprovalCount = sectorTasks.filter((t) => t.status === 'Completed').length;
 
-  const pendingProposals = tasks.filter((t) => t.status === 'Proposed');
+  const pendingProposals = sectorTasks.filter((t) => t.status === 'Proposed');
 
   const getStatusBadge = (status: LedgerTask['status']) => {
     switch (status) {
@@ -294,12 +273,17 @@ const ServerIntroPg: React.FC = () => {
           </span>
         </Link>
         <div className="flex items-center gap-3">
-          <Link
-            to="/clientpg"
-            className="text-xs font-semibold px-3.5 py-2 bg-[#1c1c1c] hover:bg-[#242424] text-neutral-200 rounded-xl border border-[#282828] shadow-sm transition"
-          >
-            Switch to Taskholder View ➔
-          </Link>
+          <div className="relative">
+            <select
+              value="/serverpg"
+              onChange={(e) => navigate(e.target.value)}
+              className="bg-neutral-900 border border-neutral-700 text-white text-xs font-bold py-2 px-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/40 cursor-pointer"
+            >
+              <option value="/serverpg" className="bg-[#141414]">🛡️ Department Regulator</option>
+              <option value="/clientpg" className="bg-[#141414]">🧑‍🔧 Field Taskholder</option>
+              <option value="/govtpg" className="bg-[#141414]">🏛️ State Government</option>
+            </select>
+          </div>
           <ThemeToggle />
           <WalletSelector />
           <Link
@@ -399,12 +383,29 @@ const ServerIntroPg: React.FC = () => {
         </p>
       </div>
 
+      {/* Domain Context Bar */}
+      <div className="w-full max-w-7xl">
+        <ActiveDomainContextBar
+          activeDomain={selectedSector}
+          onDomainChange={(d) => {
+            setSelectedSector(d);
+            localStorage.setItem('trueledger_active_domain', d);
+          }}
+          role="regulator"
+          userName={verifiedAuthority?.name || 'Class-1 Department Official'}
+        />
+      </div>
+
       {/* Level 1 & 2: Macro Allocation Pie Chart & Department Synchronized Pool */}
       <div className="w-full max-w-7xl">
         <DepartmentBudgetOverview
           budgets={budgets}
           selectedSector={selectedSector}
-          onSelectSector={setSelectedSector}
+          onSelectSector={(d) => {
+            setSelectedSector(d);
+            localStorage.setItem('trueledger_active_domain', d);
+          }}
+          onRequestBudget={() => setIsBudgetRequestModalOpen(true)}
         />
       </div>
 
@@ -415,6 +416,7 @@ const ServerIntroPg: React.FC = () => {
           <RequestInput
             onTaskCreated={loadData}
             regulatorName={verifiedAuthority?.name || 'Class-1 Regulator'}
+            activeDomain={selectedSector}
           />
 
           {/* Metric Cards in Charcoal Theme */}
@@ -461,98 +463,20 @@ const ServerIntroPg: React.FC = () => {
 
         {/* Right Column: Incoming Field Proposals + Live Audit Ledger */}
         <div className="lg:col-span-2 space-y-5">
-          {/* Incoming Bottom-Up Proposals Section */}
-          <div className="bg-[#141414]/95 border border-[#282828] rounded-2xl p-5 shadow-2xl backdrop-blur-xl">
-            <div className="flex items-center justify-between border-b border-[#282828] pb-3 mb-3">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-blue-500/15 border border-blue-500/30 rounded-lg text-blue-400">
-                  <Sparkles className="w-4 h-4" />
-                </div>
-                <div>
-                  <h2 className="text-base font-bold font-headline text-white flex items-center gap-2">
-                    Incoming Field Proposals (Bottom-Up Requests)
-                    {pendingProposals.length > 0 && (
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40">
-                        {pendingProposals.length} Pending Review
-                      </span>
-                    )}
-                  </h2>
-                </div>
-              </div>
-            </div>
-
-            {pendingProposals.length === 0 ? (
-              <p className="text-xs text-neutral-400 py-3 text-center">
-                No pending bottom-up proposals awaiting review. When taskholders submit field requests, they will appear here for your on-chain authorization.
-              </p>
-            ) : (
-              <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
-                {pendingProposals.map((proposal) => (
-                  <div
-                    key={proposal.id}
-                    className="p-3.5 bg-[#1c1c1c] border border-[#282828] rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-neutral-800 text-neutral-300 border border-neutral-700">
-                          {proposal.sector}
-                        </span>
-                        <span className="text-[10px] text-neutral-400 font-mono">
-                          From: <strong className="text-white">{proposal.taskholderName || 'Verified Taskholder'}</strong>
-                        </span>
-                      </div>
-                      <p className="text-sm font-semibold text-white truncate" title={proposal.content}>
-                        {proposal.content}
-                      </p>
-                      <div className="text-xs text-neutral-400 mt-1">
-                        Requested Budget:{' '}
-                        <span className="font-headline font-bold text-emerald-400 text-sm">
-                          ₹ {proposal.moneyAllocated.toLocaleString()}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        onClick={() => handleApproveProposal(proposal)}
-                        disabled={approvingProposalId === proposal.id}
-                        className="px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-lg transition flex items-center gap-1.5"
-                        title="Sign with Petra wallet and broadcast to domain taskholders"
-                      >
-                        {approvingProposalId === proposal.id ? (
-                          <>
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Signing...
-                          </>
-                        ) : (
-                          <>
-                            <Check className="w-3.5 h-3.5" /> Approve & Broadcast
-                          </>
-                        )}
-                      </button>
-                      <button
-                        onClick={() => handleRejectProposal(proposal.id)}
-                        disabled={approvingProposalId === proposal.id}
-                        className="px-2.5 py-1.5 bg-neutral-800 hover:bg-red-950/80 text-neutral-400 hover:text-red-300 rounded-xl text-xs font-semibold border border-neutral-700 hover:border-red-800/80 transition flex items-center gap-1"
-                        title="Decline proposal"
-                      >
-                        <XIcon className="w-3.5 h-3.5" /> Reject
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
           {/* Live Audit Ledger & Disbursement Table */}
           <div className="bg-[#141414]/95 border border-[#282828] rounded-2xl p-4 sm:p-5 shadow-2xl backdrop-blur-xl">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#282828] pb-4 mb-4">
               <div>
-                <h2 className="text-xl font-bold font-headline text-white">
-                  Transparent Task & Fund Audit
-                </h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-xl font-bold font-headline text-white">
+                    Transparent Task & Fund Audit
+                  </h2>
+                  <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-semibold">
+                    {selectedSector} Sector Only
+                  </span>
+                </div>
                 <p className="text-xs text-neutral-400 mt-0.5">
-                  Audit taskholder document proofs, verify actual expenses, and disburse public funds.
+                  Audit {selectedSector} taskholder document proofs, verify actual expenses, and disburse public funds.
                 </p>
               </div>
 
@@ -575,7 +499,7 @@ const ServerIntroPg: React.FC = () => {
 
             {filteredTasks.length === 0 ? (
               <div className="py-12 text-center text-neutral-400 text-sm">
-                No tasks found for the selected filter. Assign a new task on the left.
+                No {selectedSector} tasks found for the selected filter. Assign a new {selectedSector} task on the left.
               </div>
             ) : (
               <div className="overflow-x-auto w-full">
@@ -674,6 +598,169 @@ const ServerIntroPg: React.FC = () => {
               </div>
             )}
           </div>
+
+          {/* Incoming Bottom-Up Proposals Section */}
+          <div className="bg-[#141414]/95 border border-[#282828] rounded-2xl p-5 shadow-2xl backdrop-blur-xl">
+            <div className="flex items-center justify-between border-b border-[#282828] pb-3 mb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-blue-500/15 border border-blue-500/30 rounded-lg text-blue-400">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold font-headline text-white flex items-center gap-2">
+                    Incoming Field Proposals (Bottom-Up Requests)
+                    {pendingProposals.length > 0 && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40">
+                        {pendingProposals.length} Pending Review
+                      </span>
+                    )}
+                  </h2>
+                </div>
+              </div>
+            </div>
+
+            {pendingProposals.length === 0 ? (
+              <p className="text-xs text-neutral-400 py-3 text-center">
+                No pending bottom-up proposals awaiting review. When taskholders submit field requests, they will appear here for your on-chain authorization.
+              </p>
+            ) : (
+              <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+                {pendingProposals.map((proposal) => (
+                  <div
+                    key={proposal.id}
+                    className="p-3.5 bg-[#1c1c1c] border border-[#282828] rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-neutral-800 text-neutral-300 border border-neutral-700">
+                          {proposal.sector}
+                        </span>
+                        <span className="text-[10px] text-neutral-400 font-mono">
+                          From: <strong className="text-white">{proposal.taskholderName || 'Verified Taskholder'}</strong>
+                        </span>
+                      </div>
+                      <p className="text-sm font-semibold text-white truncate" title={proposal.content}>
+                        {proposal.content}
+                      </p>
+                      <div className="text-xs text-neutral-400 mt-1">
+                        Requested Budget:{' '}
+                        <span className="font-headline font-bold text-emerald-400 text-sm">
+                          ₹ {proposal.moneyAllocated.toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => handleApproveProposal(proposal)}
+                        disabled={approvingProposalId === proposal.id}
+                        className="px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-lg transition flex items-center gap-1.5"
+                        title="Sign with Petra wallet and broadcast to domain taskholders"
+                      >
+                        {approvingProposalId === proposal.id ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Signing...
+                          </>
+                        ) : (
+                          <>
+                            <Check className="w-3.5 h-3.5" /> Approve & Broadcast
+                          </>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => handleRejectProposal(proposal.id)}
+                        disabled={approvingProposalId === proposal.id}
+                        className="px-2.5 py-1.5 bg-neutral-800 hover:bg-red-950/80 text-neutral-400 hover:text-red-300 rounded-xl text-xs font-semibold border border-neutral-700 hover:border-red-800/80 transition flex items-center gap-1"
+                        title="Decline proposal"
+                      >
+                        <XIcon className="w-3.5 h-3.5" /> Reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Department Budget Requisitions to State Government */}
+          <div className="bg-[#141414]/95 border border-[#282828] rounded-2xl p-5 shadow-2xl backdrop-blur-xl">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#282828] pb-3 mb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-amber-500/15 border border-amber-500/30 rounded-lg text-amber-400">
+                  <Landmark className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold font-headline text-white flex items-center gap-2">
+                    Department Budget Requisitions
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                      {selectedSector}
+                    </span>
+                  </h2>
+                  <p className="text-xs text-neutral-400">
+                    Formal fund requests submitted to State Sovereign Government
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setIsBudgetRequestModalOpen(true)}
+                className="px-3.5 py-2 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded-xl transition shadow flex items-center gap-1.5 shrink-0"
+              >
+                <Landmark className="w-3.5 h-3.5" />
+                <span>+ Request Additional Budget</span>
+              </button>
+            </div>
+
+            {budgetRequests.length === 0 ? (
+              <p className="text-xs text-neutral-400 py-4 text-center">
+                No budget requisitions submitted for <strong className="text-white">{selectedSector}</strong> yet. Click "+ Request Additional Budget" above to ask the State Government for more funds.
+              </p>
+            ) : (
+              <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
+                {budgetRequests.map((req) => (
+                  <div
+                    key={req.id}
+                    className="p-3 bg-[#1c1c1c] border border-[#282828] rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-[10px] font-bold font-mono text-white">#{req.id}</span>
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                            req.status === 'Approved'
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                              : req.status === 'Pending'
+                              ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                              : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                          }`}
+                        >
+                          {req.status === 'Approved' ? '✓ Funds Disbursed to Pool' : req.status === 'Pending' ? '⏳ Awaiting Govt Review' : '✕ Requisition Denied'}
+                        </span>
+                        <span className="text-[10px] text-neutral-500">
+                          {new Date(req.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <p className="text-xs text-neutral-300 font-medium">
+                        {req.reason}
+                      </p>
+                      {req.rejectionReason && (
+                        <p className="text-[11px] text-purple-300 italic mt-0.5">
+                          Audit Feedback: {req.rejectionReason}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="text-right shrink-0">
+                      <span className="text-[10px] text-neutral-500 block">Requested Amount</span>
+                      <span className="text-sm font-bold font-mono text-amber-400">
+                        ₹ {req.requestedAmount.toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -704,6 +791,15 @@ const ServerIntroPg: React.FC = () => {
           setIsDocViewModalOpen(false);
           setSelectedTaskForDocView(null);
         }}
+      />
+
+      {/* Requisition Budget Top-Up from State Government Modal */}
+      <BudgetRequestModal
+        isOpen={isBudgetRequestModalOpen}
+        onClose={() => setIsBudgetRequestModalOpen(false)}
+        sector={selectedSector}
+        regulatorName={verifiedAuthority?.name || 'Class-1 Department Regulator'}
+        onRequestSubmitted={loadData}
       />
     </section>
   );

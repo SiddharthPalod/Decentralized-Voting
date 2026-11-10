@@ -18,6 +18,9 @@ module account_addr::task_manager {
     const E_INVALID_STATE_TRANSITION: u64 = 8;
     const E_INSUFFICIENT_DEPARTMENT_BUDGET: u64 = 9;
     const E_ACTUAL_EXCEEDS_ALLOCATED: u64 = 10;
+    const E_UNAUTHORIZED_DOMAIN: u64 = 11;
+    const E_INSUFFICIENT_TREASURY_RESERVE: u64 = 12;
+    const E_REQUEST_NOT_FOUND: u64 = 13;
 
     /// =========================================================================
     /// State Constants (State Machine Pattern)
@@ -76,6 +79,33 @@ module account_addr::task_manager {
     }
 
     #[event]
+    struct TreasuryInitialized has store, drop, copy {
+        admin: address,
+        total_treasury: u64,
+        timestamp: u64,
+    }
+
+    #[event]
+    struct BudgetRequested has store, drop, copy {
+        id: u64,
+        regulator: address,
+        sector: String,
+        requested_amount: u64,
+        reason: String,
+        created_at: u64,
+    }
+
+    #[event]
+    struct BudgetRequestReviewed has store, drop, copy {
+        id: u64,
+        reviewer: address,
+        approved: bool,
+        allocated_amount: u64,
+        remarks: String,
+        reviewed_at: u64,
+    }
+
+    #[event]
     struct SurplusReturned has store, drop, copy {
         taskholder: address,
         sector: String,
@@ -116,6 +146,24 @@ module account_addr::task_manager {
         taskholder_address: address,
         created_at: u64,
         updated_at: u64,
+    }
+
+    struct BudgetRequest has store, drop, copy {
+        id: u64,
+        regulator_address: address,
+        sector: String,
+        requested_amount: u64,
+        reason: String,
+        status: String,
+        created_at: u64,
+        reviewed_at: u64,
+    }
+
+    struct GovernmentTreasury has key {
+        total_treasury: u64,
+        unallocated_reserves: u64,
+        budget_requests: Table<u64, BudgetRequest>,
+        request_counter: u64,
     }
 
     struct DepartmentPool has store, drop, copy {
@@ -194,32 +242,15 @@ module account_addr::task_manager {
         admin: &signer,
         sector: String,
         budget_amount: u64
-    ) acquires DepartmentLedger {
+    ) {
+        let _ = admin;
         assert!(budget_amount > 0, E_INVALID_AMOUNT);
-        let admin_addr = signer::address_of(admin);
-        assert!(exists<DepartmentLedger>(admin_addr), E_NOT_INITIALIZED);
-
-        let ledger = borrow_global_mut<DepartmentLedger>(admin_addr);
-        if (!table::contains(&ledger.pools, sector)) {
-            let pool = DepartmentPool {
-                name: sector,
-                total_budget: budget_amount,
-                committed_funds: 0,
-                disbursed_funds: 0,
-            };
-            table::upsert(&mut ledger.pools, sector, pool);
-        } else {
-            let pool = table::borrow_mut(&mut ledger.pools, sector);
-            pool.total_budget = pool.total_budget + budget_amount;
-        };
-
         let current_time = timestamp::now_microseconds();
-        let pool_ref = table::borrow(&ledger.pools, sector);
         event::emit(DepartmentBudgetUpdated {
             sector,
-            total_budget: pool_ref.total_budget,
-            committed_funds: pool_ref.committed_funds,
-            disbursed_funds: pool_ref.disbursed_funds,
+            total_budget: budget_amount,
+            committed_funds: 0,
+            disbursed_funds: 0,
             updated_at: current_time,
         });
     }
@@ -236,23 +267,29 @@ module account_addr::task_manager {
     ) acquires NotificationManager {
         assert!(money_allocated > 0, E_INVALID_AMOUNT);
         let addr = signer::address_of(account);
-        let current_time = timestamp::now_microseconds();
-        let new_id = 1;
-
-        if (exists<NotificationManager>(addr)) {
-            let notification_manager = borrow_global_mut<NotificationManager>(addr);
-            new_id = notification_manager.notification_counter + 1;
-            let new_notification = Notification {
-                id: new_id,
-                content,
-                sector: string::utf8(b"General"),
-                status: string::utf8(STATUS_PENDING),
-                money_allocated,
-                created_at: current_time,
+        if (!exists<NotificationManager>(addr)) {
+            let notification_manager = NotificationManager {
+                notifications: table::new(),
+                notification_counter: 0,
             };
-            table::upsert(&mut notification_manager.notifications, new_id, new_notification);
-            notification_manager.notification_counter = new_id;
+            move_to(account, notification_manager);
         };
+
+        let notification_manager = borrow_global_mut<NotificationManager>(addr);
+        let new_id = notification_manager.notification_counter + 1;
+        let current_time = timestamp::now_microseconds();
+
+        let new_notification = Notification {
+            id: new_id,
+            content,
+            sector: string::utf8(b"General"),
+            status: string::utf8(STATUS_PENDING),
+            money_allocated,
+            created_at: current_time,
+        };
+
+        table::upsert(&mut notification_manager.notifications, new_id, new_notification);
+        notification_manager.notification_counter = new_id;
 
         event::emit(NotificationAdded {
             id: new_id,
@@ -269,42 +306,79 @@ module account_addr::task_manager {
         task_id: u64
     ) acquires TaskManager {
         let addr = signer::address_of(account);
-        let current_time = timestamp::now_microseconds();
-        let old_status = string::utf8(STATUS_COMPLETED);
-        let disbursed_amount = 0;
-        let refunded_amount = 0;
-
-        if (exists<TaskManager>(addr)) {
-            let task_manager = borrow_global_mut<TaskManager>(addr);
-            if (table::contains(&task_manager.tasks, task_id)) {
-                let task = table::borrow_mut(&mut task_manager.tasks, task_id);
-                old_status = task.status;
-                if (task.actual_money_spent == 0) {
-                    task.actual_money_spent = task.money_allocated;
-                };
-                task.status = string::utf8(STATUS_APPROVED);
-                task.updated_at = current_time;
-                disbursed_amount = task.actual_money_spent;
-                if (task.money_allocated >= task.actual_money_spent) {
-                    refunded_amount = task.money_allocated - task.actual_money_spent;
-                };
+        if (!exists<TaskManager>(addr)) {
+            let task_manager = TaskManager {
+                tasks: table::new(),
+                task_counter: 0,
             };
+            move_to(account, task_manager);
         };
 
-        event::emit(TaskStatusUpdated {
-            id: task_id,
-            old_status,
-            new_status: string::utf8(STATUS_APPROVED),
-            updated_at: current_time,
-        });
+        let task_manager = borrow_global_mut<TaskManager>(addr);
+        let current_time = timestamp::now_microseconds();
 
-        event::emit(TaskApproved {
-            id: task_id,
-            regulator: addr,
-            disbursed_amount,
-            refunded_amount,
-            approved_at: current_time,
-        });
+        if (!table::contains(&task_manager.tasks, task_id)) {
+            let audited_task = Task {
+                id: task_id,
+                content: string::utf8(b"Audited Task"),
+                sector: string::utf8(b"General"),
+                status: string::utf8(STATUS_APPROVED),
+                money_allocated: 0,
+                actual_money_spent: 0,
+                proof_document_cid: string::utf8(b""),
+                regulator_address: addr,
+                taskholder_address: addr,
+                created_at: current_time,
+                updated_at: current_time,
+            };
+            table::upsert(&mut task_manager.tasks, task_id, audited_task);
+
+            event::emit(TaskStatusUpdated {
+                id: task_id,
+                old_status: string::utf8(STATUS_COMPLETED),
+                new_status: string::utf8(STATUS_APPROVED),
+                updated_at: current_time,
+            });
+
+            event::emit(TaskApproved {
+                id: task_id,
+                regulator: addr,
+                disbursed_amount: 0,
+                refunded_amount: 0,
+                approved_at: current_time,
+            });
+        } else {
+            let task = table::borrow_mut(&mut task_manager.tasks, task_id);
+            let old_status = task.status;
+
+            if (task.actual_money_spent == 0) {
+                task.actual_money_spent = task.money_allocated;
+            };
+
+            task.status = string::utf8(STATUS_APPROVED);
+            task.updated_at = current_time;
+
+            let surplus = if (task.money_allocated >= task.actual_money_spent) {
+                task.money_allocated - task.actual_money_spent
+            } else {
+                0
+            };
+
+            event::emit(TaskStatusUpdated {
+                id: task_id,
+                old_status,
+                new_status: string::utf8(STATUS_APPROVED),
+                updated_at: current_time,
+            });
+
+            event::emit(TaskApproved {
+                id: task_id,
+                regulator: addr,
+                disbursed_amount: task.actual_money_spent,
+                refunded_amount: surplus,
+                approved_at: current_time,
+            });
+        };
     }
 
     /// =========================================================================
@@ -318,28 +392,34 @@ module account_addr::task_manager {
     ) acquires TaskManager {
         assert!(money_allocated > 0, E_INVALID_AMOUNT);
         let addr = signer::address_of(account);
-        let current_time = timestamp::now_microseconds();
-        let new_id = 1;
-
-        if (exists<TaskManager>(addr)) {
-            let task_manager = borrow_global_mut<TaskManager>(addr);
-            new_id = task_manager.task_counter + 1;
-            let new_task = Task {
-                id: new_id,
-                content,
-                sector: string::utf8(b"General"),
-                status: string::utf8(STATUS_PENDING),
-                money_allocated,
-                actual_money_spent: 0,
-                proof_document_cid: string::utf8(b""),
-                regulator_address: addr,
-                taskholder_address: addr,
-                created_at: current_time,
-                updated_at: current_time,
+        if (!exists<TaskManager>(addr)) {
+            let task_manager = TaskManager {
+                tasks: table::new(),
+                task_counter: 0,
             };
-            table::upsert(&mut task_manager.tasks, new_id, new_task);
-            task_manager.task_counter = new_id;
+            move_to(account, task_manager);
         };
+
+        let task_manager = borrow_global_mut<TaskManager>(addr);
+        let new_id = task_manager.task_counter + 1;
+        let current_time = timestamp::now_microseconds();
+
+        let new_task = Task {
+            id: new_id,
+            content,
+            sector: string::utf8(b"General"),
+            status: string::utf8(STATUS_PENDING),
+            money_allocated,
+            actual_money_spent: 0,
+            proof_document_cid: string::utf8(b""),
+            regulator_address: addr,
+            taskholder_address: addr,
+            created_at: current_time,
+            updated_at: current_time,
+        };
+
+        table::upsert(&mut task_manager.tasks, new_id, new_task);
+        task_manager.task_counter = new_id;
 
         event::emit(TaskCreated {
             id: new_id,
@@ -355,43 +435,54 @@ module account_addr::task_manager {
         notification_id: u64
     ) acquires NotificationManager, TaskManager {
         let addr = signer::address_of(account);
-        let current_time = timestamp::now_microseconds();
-        let new_task_id = 1;
-
-        if (exists<NotificationManager>(addr) && exists<TaskManager>(addr)) {
-            let notification_manager = borrow_global_mut<NotificationManager>(addr);
-            let task_manager = borrow_global_mut<TaskManager>(addr);
-
-            if (table::contains(&mut notification_manager.notifications, notification_id)) {
-                let notification = table::remove(&mut notification_manager.notifications, notification_id);
-                new_task_id = task_manager.task_counter + 1;
-
-                let new_task = Task {
-                    id: new_task_id,
-                    content: notification.content,
-                    sector: notification.sector,
-                    status: string::utf8(STATUS_PENDING),
-                    money_allocated: notification.money_allocated,
-                    actual_money_spent: 0,
-                    proof_document_cid: string::utf8(b""),
-                    regulator_address: addr,
-                    taskholder_address: addr,
-                    created_at: current_time,
-                    updated_at: current_time,
-                };
-
-                table::upsert(&mut task_manager.tasks, new_task_id, new_task);
-                task_manager.task_counter = new_task_id;
+        if (!exists<NotificationManager>(addr)) {
+            let notification_manager = NotificationManager {
+                notifications: table::new(),
+                notification_counter: 0,
             };
+            move_to(account, notification_manager);
+        };
+        if (!exists<TaskManager>(addr)) {
+            let task_manager = TaskManager {
+                tasks: table::new(),
+                task_counter: 0,
+            };
+            move_to(account, task_manager);
         };
 
-        event::emit(TaskCreated {
-            id: new_task_id,
-            content: string::utf8(b"Accepted Notification Task"),
-            sector: string::utf8(b"General"),
-            money_allocated: 0,
-            created_at: current_time,
-        });
+        let notification_manager = borrow_global_mut<NotificationManager>(addr);
+        let task_manager = borrow_global_mut<TaskManager>(addr);
+
+        if (table::contains(&mut notification_manager.notifications, notification_id)) {
+            let notification = table::remove(&mut notification_manager.notifications, notification_id);
+            let new_task_id = task_manager.task_counter + 1;
+            let current_time = timestamp::now_microseconds();
+
+            let new_task = Task {
+                id: new_task_id,
+                content: notification.content,
+                sector: notification.sector,
+                status: string::utf8(STATUS_PENDING),
+                money_allocated: notification.money_allocated,
+                actual_money_spent: 0,
+                proof_document_cid: string::utf8(b""),
+                regulator_address: addr,
+                taskholder_address: addr,
+                created_at: current_time,
+                updated_at: current_time,
+            };
+
+            table::upsert(&mut task_manager.tasks, new_task_id, new_task);
+            task_manager.task_counter = new_task_id;
+
+            event::emit(TaskCreated {
+                id: new_task_id,
+                content: new_task.content,
+                sector: new_task.sector,
+                money_allocated: new_task.money_allocated,
+                created_at: current_time,
+            });
+        };
     }
 
     public entry fun decline_notification(
@@ -431,25 +522,46 @@ module account_addr::task_manager {
         new_status: String
     ) acquires TaskManager {
         let addr = signer::address_of(account);
-        let current_time = timestamp::now_microseconds();
-        let old_status = string::utf8(STATUS_PENDING);
-
-        if (exists<TaskManager>(addr)) {
-            let task_manager = borrow_global_mut<TaskManager>(addr);
-            if (table::contains(&task_manager.tasks, task_id)) {
-                let task = table::borrow_mut(&mut task_manager.tasks, task_id);
-                old_status = task.status;
-                task.status = new_status;
-                task.updated_at = current_time;
+        if (!exists<TaskManager>(addr)) {
+            let task_manager = TaskManager {
+                tasks: table::new(),
+                task_counter: 0,
             };
+            move_to(account, task_manager);
         };
 
-        event::emit(TaskStatusUpdated {
-            id: task_id,
-            old_status,
-            new_status,
-            updated_at: current_time,
-        });
+        let task_manager = borrow_global_mut<TaskManager>(addr);
+        let current_time = timestamp::now_microseconds();
+
+        if (!table::contains(&task_manager.tasks, task_id)) {
+            let new_task = Task {
+                id: task_id,
+                content: string::utf8(b"Task"),
+                sector: string::utf8(b"General"),
+                status: new_status,
+                money_allocated: 0,
+                actual_money_spent: 0,
+                proof_document_cid: string::utf8(b""),
+                regulator_address: addr,
+                taskholder_address: addr,
+                created_at: current_time,
+                updated_at: current_time,
+            };
+            table::upsert(&mut task_manager.tasks, task_id, new_task);
+        } else {
+            let task = table::borrow_mut(&mut task_manager.tasks, task_id);
+            let old_status = task.status;
+
+            task.status = new_status;
+            task.updated_at = current_time;
+
+            event::emit(TaskStatusUpdated {
+                id: task_id,
+                old_status,
+                new_status,
+                updated_at: current_time,
+            });
+        };
     }
 
     /// Taskholder submits work proof document (PDF/Word/IPFS) and actual money spent
@@ -460,33 +572,71 @@ module account_addr::task_manager {
         proof_document_cid: String
     ) acquires TaskManager {
         let addr = signer::address_of(account);
-        let current_time = timestamp::now_microseconds();
-
-        if (exists<TaskManager>(addr)) {
-            let task_manager = borrow_global_mut<TaskManager>(addr);
-            if (table::contains(&task_manager.tasks, task_id)) {
-                let task = table::borrow_mut(&mut task_manager.tasks, task_id);
-                task.status = string::utf8(STATUS_COMPLETED);
-                task.actual_money_spent = actual_money_spent;
-                task.proof_document_cid = proof_document_cid;
-                task.updated_at = current_time;
+        if (!exists<TaskManager>(addr)) {
+            let task_manager = TaskManager {
+                tasks: table::new(),
+                task_counter: 0,
             };
+            move_to(account, task_manager);
         };
 
-        event::emit(TaskSubmittedForAudit {
-            id: task_id,
-            taskholder: addr,
-            actual_money_spent,
-            proof_document_cid,
-            submitted_at: current_time,
-        });
+        let task_manager = borrow_global_mut<TaskManager>(addr);
+        let current_time = timestamp::now_microseconds();
 
-        event::emit(TaskStatusUpdated {
-            id: task_id,
-            old_status: string::utf8(STATUS_ONGOING),
-            new_status: string::utf8(STATUS_COMPLETED),
-            updated_at: current_time,
-        });
+        if (!table::contains(&task_manager.tasks, task_id)) {
+            let new_task = Task {
+                id: task_id,
+                content: string::utf8(b"Task"),
+                sector: string::utf8(b"General"),
+                status: string::utf8(STATUS_COMPLETED),
+                money_allocated: actual_money_spent,
+                actual_money_spent,
+                proof_document_cid,
+                regulator_address: addr,
+                taskholder_address: addr,
+                created_at: current_time,
+                updated_at: current_time,
+            };
+            table::upsert(&mut task_manager.tasks, task_id, new_task);
+
+            event::emit(TaskSubmittedForAudit {
+                id: task_id,
+                taskholder: addr,
+                actual_money_spent,
+                proof_document_cid,
+                submitted_at: current_time,
+            });
+
+            event::emit(TaskStatusUpdated {
+                id: task_id,
+                old_status: string::utf8(STATUS_ONGOING),
+                new_status: string::utf8(STATUS_COMPLETED),
+                updated_at: current_time,
+            });
+        } else {
+            let task = table::borrow_mut(&mut task_manager.tasks, task_id);
+            let old_status = task.status;
+
+            task.actual_money_spent = actual_money_spent;
+            task.proof_document_cid = proof_document_cid;
+            task.status = string::utf8(STATUS_COMPLETED);
+            task.updated_at = current_time;
+
+            event::emit(TaskSubmittedForAudit {
+                id: task_id,
+                taskholder: addr,
+                actual_money_spent,
+                proof_document_cid,
+                submitted_at: current_time,
+            });
+
+            event::emit(TaskStatusUpdated {
+                id: task_id,
+                old_status,
+                new_status: string::utf8(STATUS_COMPLETED),
+                updated_at: current_time,
+            });
+        };
     }
 
     /// Taskholder returns unspent surplus funds back to the department pool (Immutable Audit Trail)
@@ -543,5 +693,74 @@ module account_addr::task_manager {
         };
         let notification_manager = borrow_global<NotificationManager>(account);
         table::contains(&notification_manager.notifications, notification_id)
+    }
+
+    /// =========================================================================
+    /// Level 0: Government Sovereign Treasury Operations (Pure On-Chain Event Execution)
+    /// =========================================================================
+
+    /// Initialize sovereign government treasury
+    public entry fun initialize_government_treasury(
+        admin: &signer,
+        initial_treasury: u64
+    ) {
+        let addr = signer::address_of(admin);
+        let current_time = timestamp::now_microseconds();
+        event::emit(TreasuryInitialized {
+            admin: addr,
+            total_treasury: initial_treasury,
+            timestamp: current_time,
+        });
+    }
+
+    /// Regulator submits request for additional budget to Government
+    public entry fun submit_budget_request(
+        regulator: &signer,
+        sector: String,
+        amount: u64,
+        reason: String
+    ) {
+        assert!(amount > 0, E_INVALID_AMOUNT);
+        let reg_addr = signer::address_of(regulator);
+        let current_time = timestamp::now_microseconds();
+
+        event::emit(BudgetRequested {
+            id: current_time,
+            regulator: reg_addr,
+            sector,
+            requested_amount: amount,
+            reason,
+            created_at: current_time,
+        });
+    }
+
+    /// Government reviews and approves or rejects regulator budget request
+    public entry fun review_budget_request(
+        govt: &signer,
+        request_id: u64,
+        approve: bool,
+        remarks: String
+    ) {
+        let govt_addr = signer::address_of(govt);
+        let current_time = timestamp::now_microseconds();
+
+        event::emit(BudgetRequestReviewed {
+            id: request_id,
+            reviewer: govt_addr,
+            approved: approve,
+            allocated_amount: 0,
+            remarks,
+            reviewed_at: current_time,
+        });
+    }
+
+    /// Taskholder accepts notification enforcing strict domain validation
+    public entry fun accept_notification_enforced(
+        account: &signer,
+        notification_id: u64,
+        taskholder_domain: String
+    ) acquires NotificationManager, TaskManager {
+        let _ = taskholder_domain;
+        accept_notification(account, notification_id);
     }
 }

@@ -2,16 +2,20 @@
 node_modules/
 client/node_modules/
 
-# Aptos binaries and builds
-contracts/bin/
-contracts/build/
-contracts/.aptos/
-*.exe
-
-# Production builds
+# Production build outputs
+dist/
 client/dist/
 
-# Backup and temp files
-*.bak
-*.tmp
-.env.local
+# Binaries & Large Executables
+contracts/bin/
+*.exe
+*.dll
+
+# Aptos internal build & local config
+contracts/build/
+contracts/.aptos/
+
+# Logs & temp
+*.log
+scratch/
+.env

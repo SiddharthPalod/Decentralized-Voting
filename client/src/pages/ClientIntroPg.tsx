@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import ActiveDomainContextBar from '../components/ActiveDomainContextBar';
 import WalletSelector from '../components/WalletSelector';
 import ThemeToggle from '../components/ThemeToggle';
 import { useWallet, InputTransactionData } from '@aptos-labs/wallet-adapter-react';
@@ -19,6 +20,8 @@ interface UserResourceData {
 
 const ClientIntroPg: React.FC = () => {
   const { account, signAndSubmitTransaction, signMessage, network } = useWallet();
+  const navigate = useNavigate();
+  const [activeDomain, setActiveDomain] = useState<string>(() => localStorage.getItem('trueledger_active_domain') || 'Healthcare');
 
   const [userExists, setUserExists] = useState<boolean | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
@@ -150,17 +153,8 @@ const ClientIntroPg: React.FC = () => {
     const finalName = newName.trim() || 'Taskholder';
     const finalField = newField || 'Healthcare';
 
-    // Cryptographic profile creation (no simulation lag)
-    if (signMessage) {
-      try {
-        await signMessage({
-          message: `TrueLedger Profile Registration:\nName: ${finalName}\nSector: ${finalField}\nAddress: ${userAddr}\nTimestamp: ${new Date().toISOString()}`,
-          nonce: Date.now().toString(),
-        });
-      } catch (e) {
-        console.warn('Profile key signature cancelled, continuing with local registration:', e);
-      }
-    } else if (signAndSubmitTransaction && network?.name?.toLowerCase() === 'devnet') {
+    // Primary: Submit real on-chain transaction to Aptos Devnet (deducts gas fee in Petra)
+    if (signAndSubmitTransaction) {
       try {
         const transaction: InputTransactionData = {
           data: {
@@ -173,8 +167,18 @@ const ClientIntroPg: React.FC = () => {
         if (response?.hash) {
           await aptos.waitForTransaction({ transactionHash: response.hash });
         }
-      } catch (e) {
-        console.warn('On-chain creation notice (TrueLedger fallback active):', e);
+      } catch (e: any) {
+        const errMsg = e?.message || e?.name || String(e);
+        if (
+          errMsg.toLowerCase().includes('reject') ||
+          errMsg.toLowerCase().includes('cancel') ||
+          errMsg.toLowerCase().includes('declined')
+        ) {
+          alert('Profile creation was cancelled in Petra wallet.');
+          setTransactionInProgress(false);
+          return;
+        }
+        console.warn('On-chain user creation notice:', e);
       }
     }
 
@@ -211,47 +215,8 @@ const ClientIntroPg: React.FC = () => {
     let onChainTxHash: string | undefined = undefined;
 
     if (account) {
-      // 100% Real on-chain Move smart contract execution on Aptos Devnet
-      if (signAndSubmitTransaction) {
-        try {
-          const tx: InputTransactionData = {
-            data: {
-              function: `${MODULE_ADDRESS}::${MODULES.taskManager}::return_surplus`,
-              functionArguments: [userData?.field || 'Healthcare', surplusBalance.toString()],
-            },
-            options: MIN_GAS_OPTIONS,
-          };
-          const response = await signAndSubmitTransaction(tx);
-          if (response?.hash) {
-            onChainTxHash = response.hash;
-            setRefundTxHash(response.hash);
-            aptos.waitForTransaction({ transactionHash: response.hash }).catch(() => {});
-          }
-        } catch (onChainErr: any) {
-          const errMsg = String(onChainErr?.message || onChainErr || '');
-          if (errMsg.toLowerCase().includes('reject') || errMsg.toLowerCase().includes('cancel') || errMsg.toLowerCase().includes('user rejected')) {
-            setTransactionInProgress(false);
-            alert('Surplus return was cancelled in Petra wallet. Operation aborted.');
-            return;
-          }
-          console.warn('Surplus return Move note, falling back to signature:', onChainErr);
-          if (signMessage) {
-            try {
-              const msgResponse = await signMessage({
-                message: `TrueLedger Department Pool Surplus Return:\nDepartment: ${userData?.field || 'Healthcare'}\nReturned Amount: ₹${surplusBalance}\nTimestamp: ${new Date().toISOString()}`,
-                nonce: Date.now().toString(),
-              });
-              const sig = typeof msgResponse === 'object' && msgResponse !== null ? (msgResponse as any).signature : '';
-              onChainTxHash = '0x' + (sig || Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''));
-              setRefundTxHash(onChainTxHash);
-            } catch (e: any) {
-              setTransactionInProgress(false);
-              alert('Surplus return was cancelled in Petra wallet. Operation aborted.');
-              return;
-            }
-          }
-        }
-      } else if (signMessage) {
+      if (signMessage) {
+        // Fast, reliable cryptographic return authorization without Petra simulation lag
         try {
           const msgResponse = await signMessage({
             message: `TrueLedger Department Pool Surplus Return:\nDepartment: ${userData?.field || 'Healthcare'}\nReturned Amount: ₹${surplusBalance}\nTimestamp: ${new Date().toISOString()}`,
@@ -264,6 +229,35 @@ const ClientIntroPg: React.FC = () => {
           setTransactionInProgress(false);
           alert('Surplus return was cancelled in Petra wallet. Operation aborted.');
           return;
+        }
+      } else if (signAndSubmitTransaction) {
+        try {
+          const tx: InputTransactionData = {
+            data: {
+              function: `${MODULE_ADDRESS}::${MODULES.taskManager}::return_surplus`,
+              functionArguments: [userData?.field || 'Healthcare', surplusBalance.toString()],
+            },
+            options: MIN_GAS_OPTIONS,
+          };
+          const response = await signAndSubmitTransaction(tx);
+          if (response?.hash) {
+            await aptos.waitForTransaction({ transactionHash: response.hash });
+            onChainTxHash = response.hash;
+            setRefundTxHash(response.hash);
+          }
+        } catch (e: any) {
+          setTransactionInProgress(false);
+          const errMsg = e?.message || e?.name || String(e);
+          if (
+            errMsg.toLowerCase().includes('reject') ||
+            errMsg.toLowerCase().includes('cancel') ||
+            errMsg.toLowerCase().includes('declined') ||
+            errMsg.toLowerCase().includes('abort')
+          ) {
+            alert('Transaction was cancelled in Petra wallet. Surplus return was aborted.');
+            return;
+          }
+          console.warn('On-chain surplus transaction skipped, recording on TrueLedger audit:', e);
         }
       }
     }
@@ -490,12 +484,17 @@ const ClientIntroPg: React.FC = () => {
           </span>
         </Link>
         <div className="flex-row flex items-center gap-3">
-          <Link
-            to="/serverpg"
-            className="text-xs font-semibold px-3 py-2 bg-[#1c1c1c] hover:bg-[#242424] text-neutral-200 rounded-xl border border-[#282828] shadow-sm transition"
-          >
-            Switch to Regulator View ➔
-          </Link>
+          <div className="relative">
+            <select
+              value="/clientpg"
+              onChange={(e) => navigate(e.target.value)}
+              className="bg-neutral-900 border border-neutral-700 text-white text-xs font-bold py-2 px-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/40 cursor-pointer"
+            >
+              <option value="/clientpg" className="bg-[#141414]">🧑‍🔧 Field Taskholder</option>
+              <option value="/serverpg" className="bg-[#141414]">🛡️ Department Regulator</option>
+              <option value="/govtpg" className="bg-[#141414]">🏛️ State Government</option>
+            </select>
+          </div>
           <ThemeToggle />
           <WalletSelector />
           <Link
@@ -505,7 +504,7 @@ const ClientIntroPg: React.FC = () => {
           >
             <Trophy className="w-4 h-4 text-amber-400 group-hover:scale-110 transition-transform" />
           </Link>
-          <NotificationList taskholderName={userData?.name || 'Verified Taskholder'} />
+          <NotificationList taskholderName={userData?.name || 'Verified Taskholder'} activeDomain={activeDomain} />
         </div>
       </div>
 
@@ -523,6 +522,19 @@ const ClientIntroPg: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Domain Context Bar */}
+      <div className="w-full max-w-7xl">
+        <ActiveDomainContextBar
+          activeDomain={activeDomain}
+          onDomainChange={(d) => {
+            setActiveDomain(d);
+            localStorage.setItem('trueledger_active_domain', d);
+          }}
+          role="taskholder"
+          userName={userData?.name || 'Accredited Field Taskholder'}
+        />
+      </div>
 
       {/* Header */}
       <div className="text-center my-6">
