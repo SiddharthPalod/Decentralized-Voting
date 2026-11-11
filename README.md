@@ -8,6 +8,10 @@
 
 **TrueLedger** is a corruption-resistant, transparent fund allocation and task auditing platform built on the **Aptos Blockchain**. It implements a complete **Three-Tier Governance Model** connecting the **Government (Sovereign Treasury)**, department authorities (**Regulators**), and field executors (**Taskholders**), ensuring that every rupee of public budget requested, allocated, spent, and refunded is immutably recorded on-chain.
 
+[![TrueLedger Demo](https://img.youtube.com/vi/FcboaKjr3cs/maxresdefault.jpg)](https://youtu.be/FcboaKjr3cs)
+[Watch the full demo on YouTube](https://youtu.be/FcboaKjr3cs)
+
+
 ---
 
 ## 🌟 Key Highlights
