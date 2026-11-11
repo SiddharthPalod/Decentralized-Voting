@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useWallet } from '@aptos-labs/wallet-adapter-react';
+import { useWallet, InputTransactionData } from '@aptos-labs/wallet-adapter-react';
+import { MODULE_ADDRESS, MODULES, aptos, MIN_GAS_OPTIONS } from '../lib/aptosClient';
 import { taskLedger, LedgerTask } from '../services/taskLedgerService';
 import TodoItem from './TodoItem';
 import TaskProofSubmissionModal from './TaskProofSubmissionModal';
@@ -8,13 +9,15 @@ import ProofDocViewerModal from './ProofDocViewerModal';
 interface TodoListProps {
   onTasksLoaded?: (tasks: LedgerTask[]) => void;
   taskholderName?: string;
+  activeDomain?: string;
 }
 
 const TodoList: React.FC<TodoListProps> = ({
   onTasksLoaded,
+  activeDomain = 'Healthcare',
 }) => {
   const [taskList, setTaskList] = useState<LedgerTask[]>([]);
-  const { account } = useWallet();
+  const { account, signAndSubmitTransaction } = useWallet();
 
   // Selected task for proof submission
   const [selectedTaskForProof, setSelectedTaskForProof] = useState<LedgerTask | null>(null);
@@ -31,6 +34,8 @@ const TodoList: React.FC<TodoListProps> = ({
       // Broadcast tasks in Pending status should only appear in the notification bell until accepted.
       // Bottom-up tasks in Proposed status should wait for regulator review.
       if (t.status === 'Pending' || t.status === 'Proposed') return false;
+      // Strict Domain Enforcement: Only show tasks matching the taskholder's active domain
+      if (activeDomain && !taskLedger.validateDomainAccess(activeDomain, t.sector)) return false;
       if (!userAddr) return true;
       if (!t.taskholderAddress) return false;
       return (
@@ -43,7 +48,7 @@ const TodoList: React.FC<TodoListProps> = ({
     if (onTasksLoaded) {
       onTasksLoaded(relevant);
     }
-  }, [account, onTasksLoaded]);
+  }, [account, onTasksLoaded, activeDomain]);
 
   useEffect(() => {
     fetchTasks();
@@ -66,13 +71,45 @@ const TodoList: React.FC<TodoListProps> = ({
     setIsProofModalOpen(true);
   };
 
-  const handleSubmitProof = (params: {
+  const handleSubmitProof = async (params: {
     taskId: number;
     actualMoneySpent: number;
     proofDocumentName: string;
     proofDocumentCid?: string;
     completionNotes: string;
   }) => {
+    // Primary: Submit real on-chain transaction to Aptos Devnet (deducts gas fee in Petra)
+    if (signAndSubmitTransaction && account) {
+      try {
+        const tx: InputTransactionData = {
+          data: {
+            function: `${MODULE_ADDRESS}::${MODULES.taskManager}::submit_task_proof`,
+            functionArguments: [
+              params.taskId.toString(),
+              params.actualMoneySpent.toString(),
+              params.proofDocumentCid || '',
+            ],
+          },
+          options: MIN_GAS_OPTIONS,
+        };
+        const response = await signAndSubmitTransaction(tx);
+        if (response?.hash) {
+          await aptos.waitForTransaction({ transactionHash: response.hash });
+        }
+      } catch (err: any) {
+        const errMsg = err?.message || err?.name || String(err);
+        if (
+          errMsg.toLowerCase().includes('reject') ||
+          errMsg.toLowerCase().includes('cancel') ||
+          errMsg.toLowerCase().includes('declined')
+        ) {
+          alert('Proof submission was cancelled in Petra wallet.');
+          return;
+        }
+        console.warn('On-chain submit_task_proof notice:', err);
+      }
+    }
+
     taskLedger.submitTaskProof(params);
     fetchTasks();
   };

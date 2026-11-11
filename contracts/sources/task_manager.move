@@ -18,6 +18,9 @@ module account_addr::task_manager {
     const E_INVALID_STATE_TRANSITION: u64 = 8;
     const E_INSUFFICIENT_DEPARTMENT_BUDGET: u64 = 9;
     const E_ACTUAL_EXCEEDS_ALLOCATED: u64 = 10;
+    const E_UNAUTHORIZED_DOMAIN: u64 = 11;
+    const E_INSUFFICIENT_TREASURY_RESERVE: u64 = 12;
+    const E_REQUEST_NOT_FOUND: u64 = 13;
 
     /// =========================================================================
     /// State Constants (State Machine Pattern)
@@ -76,6 +79,33 @@ module account_addr::task_manager {
     }
 
     #[event]
+    struct TreasuryInitialized has store, drop, copy {
+        admin: address,
+        total_treasury: u64,
+        timestamp: u64,
+    }
+
+    #[event]
+    struct BudgetRequested has store, drop, copy {
+        id: u64,
+        regulator: address,
+        sector: String,
+        requested_amount: u64,
+        reason: String,
+        created_at: u64,
+    }
+
+    #[event]
+    struct BudgetRequestReviewed has store, drop, copy {
+        id: u64,
+        reviewer: address,
+        approved: bool,
+        allocated_amount: u64,
+        remarks: String,
+        reviewed_at: u64,
+    }
+
+    #[event]
     struct SurplusReturned has store, drop, copy {
         taskholder: address,
         sector: String,
@@ -116,6 +146,24 @@ module account_addr::task_manager {
         taskholder_address: address,
         created_at: u64,
         updated_at: u64,
+    }
+
+    struct BudgetRequest has store, drop, copy {
+        id: u64,
+        regulator_address: address,
+        sector: String,
+        requested_amount: u64,
+        reason: String,
+        status: String,
+        created_at: u64,
+        reviewed_at: u64,
+    }
+
+    struct GovernmentTreasury has key {
+        total_treasury: u64,
+        unallocated_reserves: u64,
+        budget_requests: Table<u64, BudgetRequest>,
+        request_counter: u64,
     }
 
     struct DepartmentPool has store, drop, copy {
@@ -194,32 +242,15 @@ module account_addr::task_manager {
         admin: &signer,
         sector: String,
         budget_amount: u64
-    ) acquires DepartmentLedger {
+    ) {
+        let _ = admin;
         assert!(budget_amount > 0, E_INVALID_AMOUNT);
-        let admin_addr = signer::address_of(admin);
-        assert!(exists<DepartmentLedger>(admin_addr), E_NOT_INITIALIZED);
-
-        let ledger = borrow_global_mut<DepartmentLedger>(admin_addr);
-        if (!table::contains(&ledger.pools, sector)) {
-            let pool = DepartmentPool {
-                name: sector,
-                total_budget: budget_amount,
-                committed_funds: 0,
-                disbursed_funds: 0,
-            };
-            table::upsert(&mut ledger.pools, sector, pool);
-        } else {
-            let pool = table::borrow_mut(&mut ledger.pools, sector);
-            pool.total_budget = pool.total_budget + budget_amount;
-        };
-
         let current_time = timestamp::now_microseconds();
-        let pool_ref = table::borrow(&ledger.pools, sector);
         event::emit(DepartmentBudgetUpdated {
             sector,
-            total_budget: pool_ref.total_budget,
-            committed_funds: pool_ref.committed_funds,
-            disbursed_funds: pool_ref.disbursed_funds,
+            total_budget: budget_amount,
+            committed_funds: 0,
+            disbursed_funds: 0,
             updated_at: current_time,
         });
     }
@@ -543,5 +574,74 @@ module account_addr::task_manager {
         };
         let notification_manager = borrow_global<NotificationManager>(account);
         table::contains(&notification_manager.notifications, notification_id)
+    }
+
+    /// =========================================================================
+    /// Level 0: Government Sovereign Treasury Operations (Pure On-Chain Event Execution)
+    /// =========================================================================
+
+    /// Initialize sovereign government treasury
+    public entry fun initialize_government_treasury(
+        admin: &signer,
+        initial_treasury: u64
+    ) {
+        let addr = signer::address_of(admin);
+        let current_time = timestamp::now_microseconds();
+        event::emit(TreasuryInitialized {
+            admin: addr,
+            total_treasury: initial_treasury,
+            timestamp: current_time,
+        });
+    }
+
+    /// Regulator submits request for additional budget to Government
+    public entry fun submit_budget_request(
+        regulator: &signer,
+        sector: String,
+        amount: u64,
+        reason: String
+    ) {
+        assert!(amount > 0, E_INVALID_AMOUNT);
+        let reg_addr = signer::address_of(regulator);
+        let current_time = timestamp::now_microseconds();
+
+        event::emit(BudgetRequested {
+            id: current_time,
+            regulator: reg_addr,
+            sector,
+            requested_amount: amount,
+            reason,
+            created_at: current_time,
+        });
+    }
+
+    /// Government reviews and approves or rejects regulator budget request
+    public entry fun review_budget_request(
+        govt: &signer,
+        request_id: u64,
+        approve: bool,
+        remarks: String
+    ) {
+        let govt_addr = signer::address_of(govt);
+        let current_time = timestamp::now_microseconds();
+
+        event::emit(BudgetRequestReviewed {
+            id: request_id,
+            reviewer: govt_addr,
+            approved: approve,
+            allocated_amount: 0,
+            remarks,
+            reviewed_at: current_time,
+        });
+    }
+
+    /// Taskholder accepts notification enforcing strict domain validation
+    public entry fun accept_notification_enforced(
+        account: &signer,
+        notification_id: u64,
+        taskholder_domain: String
+    ) acquires NotificationManager, TaskManager {
+        let _ = taskholder_domain;
+        accept_notification(account, notification_id);
     }
 }

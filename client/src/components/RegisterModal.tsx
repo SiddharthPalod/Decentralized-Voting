@@ -6,6 +6,8 @@ import { Loader2, ShieldCheck, X } from 'lucide-react';
 interface RegisterModalProps {
   onClose: () => void;
   onSuccess: () => void;
+  initialRole?: 'taskholder' | 'regulator' | 'government';
+  initialField?: string;
 }
 
 const FIELDS = [
@@ -19,10 +21,20 @@ const FIELDS = [
   'Environment',
 ];
 
-const RegisterModal: React.FC<RegisterModalProps> = ({ onClose, onSuccess }) => {
-  const { account, signAndSubmitTransaction, signMessage, network } = useWallet();
-  const [name, setName] = useState('');
-  const [field, setField] = useState(FIELDS[0]);
+const RegisterModal: React.FC<RegisterModalProps> = ({
+  onClose,
+  onSuccess,
+  initialRole = 'taskholder',
+  initialField = 'Healthcare',
+}) => {
+  const { account, signAndSubmitTransaction, network } = useWallet();
+  const [name, setName] = useState(
+    initialRole === 'government' ? 'State Comptroller General' : ''
+  );
+  const [field, setField] = useState(
+    initialRole === 'government' ? 'Finance' : initialField
+  );
+  const [role] = useState<'taskholder' | 'regulator' | 'government'>(initialRole);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,17 +45,8 @@ const RegisterModal: React.FC<RegisterModalProps> = ({ onClose, onSuccess }) => 
 
     const userAddr = account.address.toString();
 
-    // Cryptographic identity authentication via Petra key (no 504 simulation lag)
-    if (signMessage) {
-      try {
-        await signMessage({
-          message: `TrueLedger Profile Registration:\nName: ${name.trim()}\nSector: ${field}\nAddress: ${userAddr}\nTimestamp: ${new Date().toISOString()}`,
-          nonce: Date.now().toString(),
-        });
-      } catch (e: any) {
-        console.warn('Profile key signature cancelled, continuing with local registration:', e);
-      }
-    } else if (signAndSubmitTransaction && network?.name?.toLowerCase() === 'devnet') {
+    // Primary: Submit real on-chain transaction to Aptos Devnet (deducts gas fee in Petra)
+    if (signAndSubmitTransaction) {
       try {
         const tx: InputTransactionData = {
           data: {
@@ -57,7 +60,17 @@ const RegisterModal: React.FC<RegisterModalProps> = ({ onClose, onSuccess }) => 
           await aptos.waitForTransaction({ transactionHash: response.hash });
         }
       } catch (err: any) {
-        console.warn('On-chain registration note (TrueLedger ledger active):', err);
+        const errMsg = err?.message || err?.name || String(err);
+        if (
+          errMsg.toLowerCase().includes('reject') ||
+          errMsg.toLowerCase().includes('cancel') ||
+          errMsg.toLowerCase().includes('declined')
+        ) {
+          alert('Registration was cancelled in Petra wallet.');
+          setLoading(false);
+          return;
+        }
+        console.warn('On-chain user creation notice:', err);
       }
     }
 
@@ -68,6 +81,7 @@ const RegisterModal: React.FC<RegisterModalProps> = ({ onClose, onSuccess }) => 
         JSON.stringify({
           name: name.trim(),
           field,
+          role,
           address: userAddr,
           createdAt: Date.now(),
         })
@@ -85,7 +99,7 @@ const RegisterModal: React.FC<RegisterModalProps> = ({ onClose, onSuccess }) => 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
-      <div className="bg-[#13151A] border border-[#272A33] rounded-2xl shadow-2xl w-full max-w-md p-6 text-white relative">
+      <div className="bg-[#141414] border border-[#282828] rounded-2xl shadow-2xl w-full max-w-md p-6 text-white relative">
         <button
           onClick={onClose}
           className="absolute top-5 right-5 text-gray-400 hover:text-white transition p-1 rounded-lg"
@@ -95,7 +109,7 @@ const RegisterModal: React.FC<RegisterModalProps> = ({ onClose, onSuccess }) => 
         </button>
 
         <div className="flex items-center gap-3 mb-2">
-          <div className="p-2.5 bg-[#1A1D24] text-emerald-400 border border-[#272A33] rounded-xl">
+          <div className="p-2.5 bg-[#1c1c1c] text-emerald-400 border border-[#282828] rounded-xl">
             <ShieldCheck className="w-6 h-6" />
           </div>
           <div>

@@ -44,6 +44,7 @@ export interface LedgerTask {
   createdAt: number;
   completedAt?: number;
   approvedAt?: number;
+  rejectedBy?: string[]; // List of taskholder addresses who declined this broadcast
 }
 
 export interface DepartmentBudget {
@@ -54,13 +55,63 @@ export interface DepartmentBudget {
   committedFunds: number;
 }
 
+export interface BudgetRequest {
+  id: number;
+  regulatorAddress: string;
+  regulatorName: string;
+  sector: string;
+  requestedAmount: number;
+  reason: string;
+  status: 'Pending' | 'Approved' | 'Rejected';
+  createdAt: number;
+  reviewedAt?: number;
+  rejectionReason?: string;
+  txHash?: string;
+}
+
+export interface GovernmentTreasury {
+  totalTreasury: number;
+  unallocatedReserves: number;
+  totalAllocatedToDepartments: number;
+  totalCommittedAcrossDepartments: number;
+  totalDisbursedAcrossDepartments: number;
+  isSolvent: boolean;
+}
+
 // ============================================================================
 // Initial Mock Seeding
 // ============================================================================
 
 const STORAGE_KEY = 'trueledger_tasks_v3';
 const BUDGET_STORAGE_KEY = 'trueledger_budgets_v3';
+const BUDGET_REQUESTS_KEY = 'trueledger_budget_requests_v3';
+const TREASURY_STORAGE_KEY = 'trueledger_treasury_v3';
 const USE_MOCK = import.meta.env.VITE_USE_MOCK_LEDGER === 'true';
+
+export const DEFAULT_SOVEREIGN_TREASURY_TOTAL = 5000000; // ₹ 50,00,000 sovereign treasury
+
+export const INITIAL_BUDGET_REQUESTS: BudgetRequest[] = [
+  {
+    id: 201,
+    regulatorAddress: '0x3c6d41e6d9cb82e798e861606d8ef50f90b6aedb1ef66e97c33f8879013bce6b',
+    regulatorName: 'Dr. Rajesh Verma (Class-1 Regulator)',
+    sector: 'Healthcare',
+    requestedAmount: 50000,
+    reason: 'Rapid mobilization for Monsoon Epidemic Prevention Kits in North Rural Zone.',
+    status: 'Pending',
+    createdAt: Date.now() - 3600000 * 5,
+  },
+  {
+    id: 202,
+    regulatorAddress: '0x3c6d41e6d9cb82e798e861606d8ef50f90b6aedb1ef66e97c33f8879013bce6b',
+    regulatorName: 'Er. Alok Nath (Chief Works Engineer)',
+    sector: 'Infrastructure',
+    requestedAmount: 80000,
+    reason: 'Emergency shoring and reinforcement of bridge pylon following flash floods.',
+    status: 'Pending',
+    createdAt: Date.now() - 3600000 * 12,
+  },
+];
 
 export const MACRO_BUDGETS: DepartmentBudget[] = [
   { sector: 'Healthcare', percentage: 12, totalBudget: 200000, disbursedFunds: 45000, committedFunds: 0 },
@@ -178,6 +229,15 @@ export interface IBudgetRepository {
   getAll(): DepartmentBudget[];
   getBySector(sector: string): DepartmentBudget;
   updateDelta(sector: string, committedDelta: number, disbursedDelta: number): void;
+  increaseDepartmentBudget(sector: string, amount: number): void;
+}
+
+export interface ITreasuryRepository {
+  getTotalTreasury(): number;
+  setTotalTreasury(total: number): void;
+  getAllRequests(): BudgetRequest[];
+  submitRequest(req: Omit<BudgetRequest, 'id' | 'status' | 'createdAt'>): BudgetRequest;
+  reviewRequest(id: number, approve: boolean, rejectionReason?: string, txHash?: string): { success: boolean; request?: BudgetRequest };
 }
 
 // ============================================================================
@@ -294,7 +354,8 @@ export class TaskRepository implements ITaskRepository {
     return all.filter(
       (t) =>
         t.status === 'Pending' &&
-        (t.taskholderAddress === 'ALL' || t.taskholderAddress.toLowerCase() === lower)
+        (t.taskholderAddress === 'ALL' || t.taskholderAddress.toLowerCase() === lower) &&
+        (!t.rejectedBy || !t.rejectedBy.map((a) => a.toLowerCase()).includes(lower))
     );
   }
 
@@ -378,6 +439,82 @@ export class BudgetRepository implements IBudgetRepository {
       this.eventBus.emit('trueledger_sync');
     }
   }
+
+  increaseDepartmentBudget(sectorName: string, amount: number): void {
+    const budgets = this.getAll();
+    const idx = budgets.findIndex(
+      (b) => b.sector.toLowerCase() === sectorName.toLowerCase()
+    );
+    if (idx !== -1) {
+      budgets[idx].totalBudget += amount;
+    } else {
+      budgets.push({
+        sector: sectorName,
+        percentage: 10,
+        totalBudget: amount,
+        disbursedFunds: 0,
+        committedFunds: 0,
+      });
+    }
+    this.storage.setItem(BUDGET_STORAGE_KEY, budgets);
+    this.eventBus.emit('trueledger_sync');
+  }
+}
+
+/** Repository Pattern: Sovereign Treasury & Budget Requests Management */
+export class TreasuryRepository implements ITreasuryRepository {
+  constructor(
+    private storage: IStorageProvider,
+    private eventBus: IEventBus
+  ) {}
+
+  getTotalTreasury(): number {
+    return this.storage.getItem<number>(TREASURY_STORAGE_KEY, DEFAULT_SOVEREIGN_TREASURY_TOTAL);
+  }
+
+  setTotalTreasury(total: number): void {
+    this.storage.setItem(TREASURY_STORAGE_KEY, Math.max(0, total));
+    this.eventBus.emit('trueledger_sync');
+  }
+
+  getAllRequests(): BudgetRequest[] {
+    const seed = USE_MOCK ? INITIAL_BUDGET_REQUESTS : [];
+    return this.storage.getItem<BudgetRequest[]>(BUDGET_REQUESTS_KEY, seed);
+  }
+
+  submitRequest(req: Omit<BudgetRequest, 'id' | 'status' | 'createdAt'>): BudgetRequest {
+    const requests = this.getAllRequests();
+    const newRequest: BudgetRequest = {
+      ...req,
+      id: Date.now(),
+      status: 'Pending',
+      createdAt: Date.now(),
+    };
+    requests.unshift(newRequest);
+    this.storage.setItem(BUDGET_REQUESTS_KEY, requests);
+    this.eventBus.emit('trueledger_sync');
+    return newRequest;
+  }
+
+  reviewRequest(
+    id: number,
+    approve: boolean,
+    rejectionReason?: string,
+    txHash?: string
+  ): { success: boolean; request?: BudgetRequest } {
+    const requests = this.getAllRequests();
+    const req = requests.find((r) => r.id === id);
+    if (!req) return { success: false };
+
+    req.status = approve ? 'Approved' : 'Rejected';
+    req.reviewedAt = Date.now();
+    if (rejectionReason) req.rejectionReason = rejectionReason;
+    if (txHash) req.txHash = txHash;
+
+    this.storage.setItem(BUDGET_REQUESTS_KEY, requests);
+    this.eventBus.emit('trueledger_sync');
+    return { success: true, request: req };
+  }
 }
 
 // ============================================================================
@@ -388,6 +525,7 @@ export class TaskLedgerService {
   constructor(
     private taskRepo: ITaskRepository,
     private budgetRepo: IBudgetRepository,
+    private treasuryRepo: ITreasuryRepository,
     private eventBus: IEventBus,
     private pseudonymGen: IPseudonymGenerator,
     private stateGuard: ITaskStateGuard
@@ -396,6 +534,95 @@ export class TaskLedgerService {
   // --- Subscriptions (Observer) ---
   subscribe(callback: () => void): () => void {
     return this.eventBus.subscribe('trueledger_sync', callback);
+  }
+
+  // --- Domain Access Validation ---
+  validateDomainAccess(userDomain?: string, targetSector?: string): boolean {
+    if (!userDomain || !targetSector) return true;
+    const cleanUser = userDomain.trim().toLowerCase();
+    const cleanTarget = targetSector.trim().toLowerCase();
+    return (
+      cleanUser === cleanTarget ||
+      cleanUser === 'universal' ||
+      cleanUser === 'government' ||
+      cleanUser === 'general'
+    );
+  }
+
+  // --- Government Sovereign Treasury Operations ---
+  getTreasury(): GovernmentTreasury {
+    const totalTreasury = this.treasuryRepo.getTotalTreasury();
+    const budgets = this.budgetRepo.getAll();
+
+    const totalAllocatedToDepartments = budgets.reduce((sum, b) => sum + (b.totalBudget || 0), 0);
+    const totalCommittedAcrossDepartments = budgets.reduce((sum, b) => sum + (b.committedFunds || 0), 0);
+    const totalDisbursedAcrossDepartments = budgets.reduce((sum, b) => sum + (b.disbursedFunds || 0), 0);
+
+    const unallocatedReserves = Math.max(0, totalTreasury - totalAllocatedToDepartments);
+    const isSolvent = totalTreasury >= totalAllocatedToDepartments;
+
+    return {
+      totalTreasury,
+      unallocatedReserves,
+      totalAllocatedToDepartments,
+      totalCommittedAcrossDepartments,
+      totalDisbursedAcrossDepartments,
+      isSolvent,
+    };
+  }
+
+  allocateTreasuryToDepartment(sectorName: string, amount: number): boolean {
+    if (amount <= 0) return false;
+    const treasury = this.getTreasury();
+    if (treasury.unallocatedReserves < amount) {
+      console.warn('Insufficient sovereign reserves to allocate to department');
+      return false;
+    }
+
+    this.budgetRepo.increaseDepartmentBudget(sectorName, amount);
+    return true;
+  }
+
+  getAllBudgetRequests(): BudgetRequest[] {
+    return this.treasuryRepo.getAllRequests();
+  }
+
+  getBudgetRequestsForSector(sector: string): BudgetRequest[] {
+    const all = this.getAllBudgetRequests();
+    if (!sector || sector === 'ALL') return all;
+    return all.filter((r) => r.sector.toLowerCase() === sector.toLowerCase());
+  }
+
+  submitBudgetRequest(params: {
+    regulatorAddress: string;
+    regulatorName: string;
+    sector: string;
+    requestedAmount: number;
+    reason: string;
+    txHash?: string;
+  }): BudgetRequest {
+    return this.treasuryRepo.submitRequest(params);
+  }
+
+  reviewBudgetRequest(params: {
+    requestId: number;
+    approve: boolean;
+    rejectionReason?: string;
+    txHash?: string;
+  }): boolean {
+    const res = this.treasuryRepo.reviewRequest(
+      params.requestId,
+      params.approve,
+      params.rejectionReason,
+      params.txHash
+    );
+
+    if (res.success && res.request && params.approve) {
+      // Auto-topup department budget upon approval
+      this.budgetRepo.increaseDepartmentBudget(res.request.sector, res.request.requestedAmount);
+    }
+
+    return res.success;
   }
 
   // --- Budget Queries & Operations ---
@@ -520,9 +747,19 @@ export class TaskLedgerService {
   }
 
   /** U: Taskholder accepts broadcasted task */
-  acceptTask(taskId: number, taskholderAddress: string, taskholderName: string): boolean {
+  acceptTask(
+    taskId: number,
+    taskholderAddress: string,
+    taskholderName?: string,
+    taskholderDomain?: string
+  ): boolean {
     const task = this.taskRepo.getById(taskId);
     if (!task) return false;
+
+    if (taskholderDomain && !this.validateDomainAccess(taskholderDomain, task.sector)) {
+      console.warn(`Domain violation: Taskholder in ${taskholderDomain} cannot accept ${task.sector} task`);
+      return false;
+    }
 
     if (!this.stateGuard.canTransition(task.status, 'Ongoing')) {
       console.warn(`Invalid transition from ${task.status} to Ongoing`);
@@ -538,13 +775,73 @@ export class TaskLedgerService {
     return true;
   }
 
-  /** D: Decline notification */
-  declineTask(taskId: number): void {
-    const task = this.taskRepo.getById(taskId);
-    if (task && task.status === 'Pending') {
-      this.budgetRepo.updateDelta(task.sector, -task.moneyAllocated, 0);
+  /** Helper: Determine total registered taskholders in a sector domain */
+  getDomainTaskholderCount(sector: string): number {
+    let count = 0;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('trueledger_user_')) {
+          const val = localStorage.getItem(key);
+          if (val) {
+            const user = JSON.parse(val);
+            if (
+              user.role === 'taskholder' &&
+              (!user.field || user.field.toLowerCase() === sector.toLowerCase() || user.field === 'Universal')
+            ) {
+              count++;
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
     }
-    this.taskRepo.delete(taskId);
+    // Quorum threshold: minimum 2 taskholders in any domain broadcast pool
+    return Math.max(2, count);
+  }
+
+  /** D: Decline broadcast notification with quorum check - only deletes if ALL taskholders reject */
+  declineTask(taskId: number, taskholderAddress?: string): { deleted: boolean; remainingSubscribers: number } {
+    const task = this.taskRepo.getById(taskId);
+    if (!task) return { deleted: false, remainingSubscribers: 0 };
+
+    const cleanAddr = taskholderAddress ? taskholderAddress.toLowerCase() : '';
+
+    // Non-broadcast task (assigned specifically to a single individual)
+    if (task.taskholderAddress && task.taskholderAddress !== 'ALL') {
+      if (task.status === 'Pending') {
+        this.budgetRepo.updateDelta(task.sector, -task.moneyAllocated, 0);
+      }
+      this.taskRepo.delete(taskId);
+      return { deleted: true, remainingSubscribers: 0 };
+    }
+
+    // Broadcast task (taskholderAddress === 'ALL'):
+    if (!task.rejectedBy) {
+      task.rejectedBy = [];
+    }
+    if (cleanAddr && !task.rejectedBy.map((a) => a.toLowerCase()).includes(cleanAddr)) {
+      task.rejectedBy.push(cleanAddr);
+    }
+
+    const totalDomainTaskholders = this.getDomainTaskholderCount(task.sector);
+
+    // Only delete if ALL taskholders of that domain rejected it:
+    if (task.rejectedBy.length >= totalDomainTaskholders) {
+      if (task.status === 'Pending') {
+        this.budgetRepo.updateDelta(task.sector, -task.moneyAllocated, 0);
+      }
+      this.taskRepo.delete(taskId);
+      return { deleted: true, remainingSubscribers: 0 };
+    } else {
+      // Keep the task alive in the pool for other domain taskholders!
+      this.taskRepo.upsert(task);
+      return {
+        deleted: false,
+        remainingSubscribers: Math.max(0, totalDomainTaskholders - task.rejectedBy.length),
+      };
+    }
   }
 
   /** U: Update task status */
@@ -673,10 +970,12 @@ const defaultStateGuard = new TaskLifecycleGuard();
 
 const defaultTaskRepo = new TaskRepository(defaultStorageProvider, defaultEventBus);
 const defaultBudgetRepo = new BudgetRepository(defaultStorageProvider, defaultEventBus);
+const defaultTreasuryRepo = new TreasuryRepository(defaultStorageProvider, defaultEventBus);
 
 export const taskLedger = new TaskLedgerService(
   defaultTaskRepo,
   defaultBudgetRepo,
+  defaultTreasuryRepo,
   defaultEventBus,
   defaultPseudonymGen,
   defaultStateGuard

@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { DepartmentBudget, MACRO_BUDGETS } from '../services/taskLedgerService';
-import { PieChart, TrendingUp, ShieldCheck, DollarSign, Users } from 'lucide-react';
+import { PieChart, TrendingUp, ShieldCheck, DollarSign, Users, Landmark } from 'lucide-react';
 
 interface DepartmentBudgetOverviewProps {
   budgets?: DepartmentBudget[];
   selectedSector: string;
   onSelectSector: (sector: string) => void;
+  onRequestBudget?: () => void;
 }
 
 const SECTOR_COLORS: Record<string, { stroke: string; bg: string; text: string }> = {
@@ -21,6 +22,7 @@ const DepartmentBudgetOverview: React.FC<DepartmentBudgetOverviewProps> = ({
   budgets,
   selectedSector,
   onSelectSector,
+  onRequestBudget,
 }) => {
   const [hoveredSector, setHoveredSector] = useState<string | null>(null);
 
@@ -73,11 +75,21 @@ const DepartmentBudgetOverview: React.FC<DepartmentBudgetOverviewProps> = ({
             Macro State Allocation & Synchronized Pool
           </h2>
         </div>
-        <div className="text-right">
-          <div className="text-xs text-neutral-400 font-semibold">Total State Treasury</div>
-          <div className="text-lg md:text-xl font-headline font-bold text-white">
-            ₹ {totalMacroBudget.toLocaleString()}
+        <div className="flex flex-col md:flex-row items-start md:items-center gap-3">
+          <div className="text-right">
+            <div className="text-xs text-neutral-400 font-semibold">Total Department Pool</div>
+            <div className="text-lg md:text-xl font-headline font-bold text-white">
+              ₹ {totalMacroBudget.toLocaleString()}
+            </div>
           </div>
+          {onRequestBudget && (
+            <button
+              onClick={onRequestBudget}
+              className="px-3.5 py-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow"
+            >
+              <span>🏛️ Request Top-Up</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -252,6 +264,19 @@ const DepartmentBudgetOverview: React.FC<DepartmentBudgetOverviewProps> = ({
                 <span className="w-2 h-2 rounded-full bg-neutral-700" /> Available Pool
               </span>
             </div>
+
+            {onRequestBudget && (
+              <div className="mt-4 pt-3 border-t border-[#242424] flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <span className="text-xs text-neutral-400">Need more capital for {activeSectorBudget.sector}?</span>
+                <button
+                  onClick={onRequestBudget}
+                  className="px-3.5 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow"
+                >
+                  <Landmark className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Request Budget Top-Up from State Government →</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
